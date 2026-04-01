@@ -28,7 +28,7 @@ var (
 
 func init() {
 	// 默认值
-	defaultUUID := "147258369-1234-5678-9abc-def012345678"
+	defaultUUID := "f0175430-1c54-412b-8183-7f7e5048e8cb"
 	defaultPort := int64(3325)
 
 	// 环境变量覆盖默认值
