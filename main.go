@@ -214,14 +214,20 @@ func handleVLESSSession(ws *websocket.Conn, clientAddr string) {
 		return
 	}
 
-	if command != cmdTCP {
+	network := ""
+	switch command {
+	case cmdTCP:
+		network = "tcp"
+	case cmdUDP:
+		network = "udp"
+	default:
 		log.Printf("[WARN] Unsupported command: %d", command)
 		return
 	}
 
 	// 连接目标服务器
 	dialer := net.Dialer{Timeout: 10 * time.Second}
-	conn, err := dialer.Dial("tcp", targetAddr)
+	conn, err := dialer.Dial(network, targetAddr)
 	if err != nil {
 		log.Printf("[ERROR] Failed to connect to %s: %v", targetAddr, err)
 		return
@@ -243,6 +249,15 @@ func handleVLESSSession(ws *websocket.Conn, clientAddr string) {
 		return
 	}
 
+	switch command {
+	case cmdTCP:
+		handleTCPSession(ws, conn, clientAddr, targetAddr, payload, &mu, func() bool { return closed })
+	case cmdUDP:
+		handleUDPSession(ws, conn, clientAddr, targetAddr, payload, &mu, func() bool { return closed })
+	}
+}
+
+func handleTCPSession(ws *websocket.Conn, conn net.Conn, clientAddr, targetAddr string, payload []byte, mu *sync.Mutex, isClosed func() bool) {
 	// 如果有 payload，先发送到目标服务器
 	if len(payload) > 0 {
 		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
@@ -268,7 +283,7 @@ func handleVLESSSession(ws *websocket.Conn, clientAddr string) {
 				return
 			}
 			mu.Lock()
-			if closed {
+			if isClosed() {
 				mu.Unlock()
 				closeDone()
 				return
@@ -292,12 +307,12 @@ func handleVLESSSession(ws *websocket.Conn, clientAddr string) {
 			}
 			ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 			mu.Lock()
-			if closed || remoteConn == nil {
+			if isClosed() || conn == nil {
 				mu.Unlock()
 				closeDone()
 				return
 			}
-			_, err = remoteConn.Write(data)
+			_, err = conn.Write(data)
 			mu.Unlock()
 			if err != nil {
 				closeDone()
@@ -308,6 +323,116 @@ func handleVLESSSession(ws *websocket.Conn, clientAddr string) {
 
 	<-done
 	log.Printf("[INFO] Session ended: %s -> %s", clientAddr, targetAddr)
+}
+
+func handleUDPSession(ws *websocket.Conn, conn net.Conn, clientAddr, targetAddr string, payload []byte, mu *sync.Mutex, isClosed func() bool) {
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	closeDone := func() { closeOnce.Do(func() { close(done) }) }
+
+	writePacket := func(packet []byte) error {
+		if len(packet) == 0 {
+			return nil
+		}
+		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		_, err := conn.Write(packet)
+		conn.SetWriteDeadline(time.Time{})
+		return err
+	}
+
+	remaining := payload
+	for {
+		packet, rest, ok := nextUDPPacket(remaining)
+		if !ok {
+			if len(remaining) > 0 {
+				log.Printf("[WARN] Incomplete UDP payload from %s", clientAddr)
+			}
+			break
+		}
+		if err := writePacket(packet); err != nil {
+			log.Printf("[ERROR] Failed to write UDP payload: %v", err)
+			return
+		}
+		remaining = rest
+	}
+
+	go func() {
+		buf := make([]byte, 64*1024)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				closeDone()
+				return
+			}
+
+			frame := make([]byte, 2+n)
+			binary.BigEndian.PutUint16(frame[:2], uint16(n))
+			copy(frame[2:], buf[:n])
+
+			mu.Lock()
+			if isClosed() {
+				mu.Unlock()
+				closeDone()
+				return
+			}
+			err = ws.WriteMessage(websocket.BinaryMessage, frame)
+			mu.Unlock()
+			if err != nil {
+				closeDone()
+				return
+			}
+		}
+	}()
+
+	go func() {
+		var pending []byte
+		for {
+			_, data, err := ws.ReadMessage()
+			if err != nil {
+				closeDone()
+				return
+			}
+			ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+
+			pending = append(pending, data...)
+			for {
+				packet, rest, ok := nextUDPPacket(pending)
+				if !ok {
+					pending = rest
+					break
+				}
+				mu.Lock()
+				if isClosed() || conn == nil {
+					mu.Unlock()
+					closeDone()
+					return
+				}
+				err = writePacket(packet)
+				mu.Unlock()
+				if err != nil {
+					closeDone()
+					return
+				}
+				pending = rest
+			}
+		}
+	}()
+
+	<-done
+	log.Printf("[INFO] UDP session ended: %s -> %s", clientAddr, targetAddr)
+}
+
+func nextUDPPacket(data []byte) (packet []byte, remaining []byte, ok bool) {
+	if len(data) < 2 {
+		return nil, data, false
+	}
+
+	packetLen := int(binary.BigEndian.Uint16(data[:2]))
+	if len(data) < 2+packetLen {
+		return nil, data, false
+	}
+
+	return data[2 : 2+packetLen], data[2+packetLen:], true
 }
 
 // parseVLESSRequest 解析 VLESS 请求
