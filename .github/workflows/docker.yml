@@ -39,13 +39,13 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=match,pattern=server-v(.*),group=1
+            type=match,pattern=v(.*),group=1
             type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: apps/server
+          context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
