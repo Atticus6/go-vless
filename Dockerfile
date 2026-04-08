@@ -13,8 +13,10 @@ RUN go mod download
 # 再拷贝源码
 COPY . .
 
-# 构建（静态编译）
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+# 构建（静态编译，平台由 BuildKit 自动注入，默认 amd64）
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o server .
 
 
