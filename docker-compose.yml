@@ -1,0 +1,39 @@
+# go-vless Docker Compose 使用示例
+# 快速启动 (首次会拉镜像):
+#   UUID=<你的uuid> CONFIG_KEY=<管理密钥> docker compose up -d
+# 指定版本:
+#   IMAGE_TAG=0.1 UUID=xxx CONFIG_KEY=xxx docker compose up -d
+# 常用命令: up -d / down / restart / ps / logs -f
+#
+# 说明:
+# - 镜像 tag 与 GitHub Release 版本对应 (去 v, 如 v0.1.0 -> 0.1), latest 跟随最新正式版
+# - 容器内监听端口固定 8080, 改左侧宿主机端口即可 (如 "9090:8080")
+# - install.sh 的 Docker 模式会自动生成类似文件到 /opt/go-vless/, 手动部署参考本文件
+
+services:
+  go-vless:
+    image: ghcr.io/atticus6/go-vless:${IMAGE_TAG:-latest}
+    container_name: go-vless
+    restart: unless-stopped
+    ports:
+      # 左侧宿主机端口可改 (HOST_PORT=9090 ... up -d), 右侧须与下面 PORT 一致
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      # 必填: VLESS 用户 UUID, 多用户逗号分隔
+      UUID: ${UUID:?请设置 UUID, 如 UUID=xxx docker compose up -d}
+      # 管理页 /config 通信密钥, 留空则 /config 直接 404
+      CONFIG_KEY: ${CONFIG_KEY:-}
+      # 容器内监听端口, 与 ports 右侧保持一致, 一般不用改
+      PORT: 8080
+      # Argo 隧道开关: 1 开 / 0 关 (VPS 直连建议 1, 已有域名反代可 0)
+      TUNNEL: ${TUNNEL:-1}
+      # 隧道协议: auto(默认) | quic | http2
+      TUNNEL_PROTO: ${TUNNEL_PROTO:-auto}
+      # 最大并发 VLESS 会话数
+      MAX_CONN: ${MAX_CONN:-4096}
+      # 公网地址 (管理页 urls 展示, 均支持逗号分隔多值):
+      # 自绑域名 / Vercel 部署域名(自动注入, 手动部署可填) / 额外主机 / Railway 域名(自动注入)
+      DOMAIN: ${DOMAIN:-}
+      VERCEL_URL: ${VERCEL_URL:-}
+      NF_HOSTS: ${NF_HOSTS:-}
+      RAILWAY_PUBLIC_DOMAIN: ${RAILWAY_PUBLIC_DOMAIN:-}
