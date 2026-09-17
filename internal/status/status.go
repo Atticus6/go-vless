@@ -47,10 +47,7 @@ func (p *Provider) Handler(w http.ResponseWriter, r *http.Request) {
 		url = p.TunnelURL()
 	}
 	if url == "" {
-		if host := strings.TrimSpace(os.Getenv("VERCEL_URL")); host != "" {
-			host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
-			url = "https://" + host
-		}
+		url = publicURL()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -165,6 +162,20 @@ func checkConfigKey(r *http.Request) bool {
 		return key == expected
 	}
 	return r.Header.Get("X-Config-Key") == expected
+}
+
+// publicURL 公网访问地址: 自定义 DOMAIN 优先, 其次 Vercel 自动注入的 VERCEL_URL,
+// 都没有返回空字符串.
+func publicURL() string {
+	host := strings.TrimSpace(os.Getenv("DOMAIN"))
+	if host == "" {
+		host = strings.TrimSpace(os.Getenv("VERCEL_URL"))
+	}
+	if host == "" {
+		return ""
+	}
+	host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
+	return "https://" + strings.TrimSuffix(host, "/")
 }
 
 // boolOr 取闭包值, 闭包为 nil 时回退默认值 (乐观默认支持)

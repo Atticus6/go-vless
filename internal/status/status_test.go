@@ -82,6 +82,33 @@ func TestConfigHandlerAuth(t *testing.T) {
 	}
 }
 
+func TestPublicURLPrecedence(t *testing.T) {
+	// DOMAIN 优先于 VERCEL_URL
+	t.Setenv("DOMAIN", "example.com")
+	t.Setenv("VERCEL_URL", "xxx.vercel.app")
+	if got := publicURL(); got != "https://example.com" {
+		t.Errorf("both set = %q, want https://example.com", got)
+	}
+
+	// 带 scheme/斜杠自动归一化
+	t.Setenv("DOMAIN", "https://example.com/")
+	if got := publicURL(); got != "https://example.com" {
+		t.Errorf("normalize = %q, want https://example.com", got)
+	}
+
+	// DOMAIN 为空回退 VERCEL_URL
+	t.Setenv("DOMAIN", "")
+	if got := publicURL(); got != "https://xxx.vercel.app" {
+		t.Errorf("fallback = %q, want https://xxx.vercel.app", got)
+	}
+
+	// 都没有返回空
+	t.Setenv("VERCEL_URL", "")
+	if got := publicURL(); got != "" {
+		t.Errorf("empty = %q, want empty", got)
+	}
+}
+
 func TestConfigUsersManage(t *testing.T) {
 	t.Setenv("CONFIG_KEY", "s3cr3t")
 	id := uuid.New()
