@@ -4,102 +4,106 @@
 
 [![Release](https://github.com/Atticus6/go-vless/actions/workflows/release.yml/badge.svg)](https://github.com/Atticus6/go-vless/releases)
 
-VLESS over WebSocket proxy: multi-user, traffic stats, Argo tunnel, and a web admin page — one config for VPS / Docker / Vercel / Railway.
+Lightweight, fast, serverless-first VLESS proxy server (no servers to manage, pay for what you use).
 
-## Features
+> VLESS is a proxy protocol: apps on your phone/computer connect through it to browse via your server.
 
-- Multi-user: comma-separated UUIDs, per-user traffic accounting
-- Argo tunnel: works without a public IP; direct VPS connection works too
-- Admin page: tunnel status, access URLs, egress IPs, traffic, memory — all in one place
-- User management: add/remove users online, no restart needed
-- One-click install: VPS script, Docker, and Vercel supported
+## Why go-vless
+
+**Lightweight** — the serverless build is ~**6MB**, uses ~**5MB** of memory when idle, single file, download and run.
+
+**Fast** — ready in ~**0.4s**; unreachable addresses fail instantly instead of spinning forever.
+
+**Serverless-friendly** — stores nothing, run as many copies as you like, restarts don't matter; auto-adapts on Vercel / Railway out of the box.
 
 ## Quick start
 
-### Docker Compose (recommended)
+### Serverless (Vercel, one click, no server needed)
+
+Import the repo and deploy, add env vars in the web console (at least `UUID` and `CONFIG_KEY`), then redeploy.
+
+### Docker (one line)
 
 ```bash
 UUID=<your-uuid> CONFIG_KEY=<admin-key> docker compose up -d
 ```
 
-Pin a version with `IMAGE_TAG=0.1`, change the host port with `HOST_PORT=9090`, view logs with `docker logs -f go-vless`.
+Pin a version with `IMAGE_TAG=0.1`, change the port with `HOST_PORT=9090`, view logs with `docker logs -f go-vless`.
 
-### One-click VPS script
+### VPS (one-click script)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash
 ```
 
-It asks binary (default) vs Docker and whether to enable the tunnel. Afterwards:
+It asks direct install (default) vs Docker and whether to enable the tunnel. Afterwards:
 
 ```bash
 sudo ./install.sh update    # upgrade to latest
 sudo ./install.sh uninstall # uninstall
 ```
 
-### Vercel
-
-Import the repo and deploy, then add env vars in the dashboard (at least `UUID` and `CONFIG_KEY`) and redeploy.
-
 ## Configuration
 
-Env vars and CLI flags are equivalent, flags win. Restart after changing config (`docker compose up -d`, or `systemctl restart go-vless` for the script binary install).
+Everything lives in env vars; restart after changing (recreate Docker, restart the service on VPS, redeploy on serverless).
 
-| Env var         | Flag            | Default | Description                                              |
-| --------------- | --------------- | ------- | -------------------------------------------------------- |
-| `UUID`          | `-uuid`         | —       | User UUID(s), **required**, comma-separated for multi-user |
-| `PORT`          | `-port`         | `8080`  | Listen port (auto-overridden on Vercel/Railway)          |
-| `TUNNEL`        | `-tunnel`       | `true`  | Argo tunnel toggle; defaults off on Vercel               |
-| `TUNNEL_PROTO`  | `-tunnel-proto` | `auto`  | Tunnel protocol: `auto` / `quic` / `http2`, try another if it won't connect |
-| `MAX_CONN`      | `-max-conn`     | `4096`  | Max concurrent connections, 503 beyond                   |
-| `CONFIG_KEY`    | —               | empty   | Admin page key; **empty means the admin page returns 404** |
-| `DOMAIN`        | —               | empty   | Your custom domain, shown on the admin page              |
-| `VERCEL_URL` / `NF_HOSTS` / `RAILWAY_PUBLIC_DOMAIN` | — | empty | Platform domains / extra hosts, shown on the admin page |
-| `SKIP_BBR`      | —               | empty   | Set `1` to skip BBR                                      |
+| Env var         | Default | Description                                              |
+| --------------- | ------- | -------------------------------------------------------- |
+| `UUID`          | —       | **Required**, one key per user, separate multiple with commas |
+| `PORT`          | `8080`  | Service port (auto-set on Vercel/Railway, ignore it there) |
+| `TUNNEL`        | on      | Lets you connect with no public IP; auto-off on Vercel  |
+| `TUNNEL_PROTO`  | `auto`  | If the tunnel won't connect, try `quic` or `http2`      |
+| `MAX_CONN`      | `4096`  | Max users online at once, newcomers refused beyond that |
+| `CONFIG_KEY`    | empty   | Admin page password; **empty means the admin page won't open (404)** |
+| `DOMAIN`        | empty   | Your own domain, shown on the admin page                |
+| `VERCEL_URL` / `NF_HOSTS` / `RAILWAY_PUBLIC_DOMAIN` | empty | Platform-provided addresses, shown on the admin page |
 
 ## Admin page
 
-Open in a browser (a missing/wrong `CONFIG_KEY` gives 404 — that's by design):
+Open in a browser (a missing/wrong password gives 404 — that's by design):
 
 ```
 http://<server-ip>:<port>/config?key=<CONFIG_KEY>
 ```
 
-Shows: tunnel on/off, tunnel address, access URLs, IPv4/IPv6 egress status, public egress IPs, **per-user traffic**, memory usage, uptime.
+Shows: tunnel on/off, tunnel address, usable addresses, the server's public IP, **traffic per user**, memory usage, uptime.
 
-Traffic: `up` = sent by the user, `down` = received by the user; **counters reset on restart**.
+Traffic: `up` = sent by the user, `down` = received by the user; **counters reset on restart** (same after a serverless sleep/wake cycle).
 
-### Add/remove users online
+### Add/remove users online (no restart)
 
 ```bash
-# Add (an invalid UUID rejects the whole batch)
+# Add (one bad entry rejects the whole batch)
 curl -X POST 'http://<ip>:<port>/config/users/add?key=<CONFIG_KEY>' \
   -H 'Content-Type: application/json' \
   -d '{"uuids":["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]}'
 
-# Remove (unknown IDs are ignored)
+# Remove (unknown ones are ignored)
 curl -X POST 'http://<ip>:<port>/config/users/remove?key=<CONFIG_KEY>' \
   -H 'Content-Type: application/json' \
   -d '{"uuids":["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]}'
 ```
 
-Note: runtime changes live in memory only — after a restart the `UUID` env var wins; removing a user doesn't kick its active connections (new ones are rejected immediately).
+Note: runtime changes live in memory only — after a restart the `UUID` env var wins; removing a user doesn't kick its active connections (new ones are refused immediately).
 
-## Connecting clients
+## Connecting your apps
 
-- With tunnel: use the tunnel address (`tunnelURL` on the admin page), port `443`, `ws` transport, path `/`
-- Direct VPS: use the server IP/domain, port `PORT`, path `/`
+Copy the tunnel address from the `tunnelURL` line on the admin page (or use the server IP/domain without tunnel) and fill in your client app:
+
+- Address: tunnel address, or server IP/domain
+- Port: `443` with tunnel, `PORT` without
+- Transport: `ws`, path: `/`
+- User ID: the one from `UUID`
 
 ## Updating
 
 - Docker: `docker compose pull && docker compose up -d` (pin `IMAGE_TAG` to stay on a version)
 - One-click script: `sudo ./install.sh update [version, latest if omitted]`
-- Vercel: redeploy in the dashboard
-- Build it yourself: `go build -o server .`
+- Vercel: redeploy in the web console
 
 ## FAQ
 
-1. **Admin page 404?** Check `CONFIG_KEY` first; unset means 404 — set it.
-2. **Tunnel address stays empty?** It's still establishing right after boot — refresh and retry; if it never appears, try `TUNNEL_PROTO=quic` or `http2`.
-3. **IPv6 not working?** Check the `ipv6` field on the admin page; if the server has no IPv6 egress, related requests are fast-rejected instead of hanging.
+1. **Admin page won't open (404)?** Check `CONFIG_KEY` first; unset means closed — set it.
+2. **Tunnel address stays empty?** It's still connecting right after boot — refresh and retry; if it never appears, try `TUNNEL_PROTO=quic` or `http2`.
+3. **IPv6 not working?** Check the `ipv6` line on the admin page; if the server itself doesn't support it, it's skipped automatically instead of hanging.
 4. **Change ports in Docker?** Edit the `ports` mapping in `docker-compose.yml` (e.g. `"9090:8080"`) and `up -d` to recreate.
