@@ -92,12 +92,14 @@ func TestEnvHosts(t *testing.T) {
 	t.Setenv("DOMAIN", "example.com, https://a.com/, example.com, ,")
 	t.Setenv("VERCEL_URL", "xxx.vercel.app")
 	t.Setenv("NF_HOSTS", "h1.com,h2.com,h1.com")
+	t.Setenv("RAILWAY_PUBLIC_DOMAIN", "xxx.up.railway.app")
 	want := []string{
 		"https://example.com", "https://a.com",
 		"https://xxx.vercel.app",
 		"https://h1.com", "https://h2.com",
+		"https://xxx.up.railway.app",
 	}
-	if got := envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS"); !reflect.DeepEqual(got, want) {
+	if got := envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS", "RAILWAY_PUBLIC_DOMAIN"); !reflect.DeepEqual(got, want) {
 		t.Errorf("envHosts = %v, want %v", got, want)
 	}
 
@@ -105,7 +107,8 @@ func TestEnvHosts(t *testing.T) {
 	t.Setenv("DOMAIN", "")
 	t.Setenv("VERCEL_URL", "")
 	t.Setenv("NF_HOSTS", " , ")
-	if got := envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS"); len(got) != 0 {
+	t.Setenv("RAILWAY_PUBLIC_DOMAIN", "")
+	if got := envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS", "RAILWAY_PUBLIC_DOMAIN"); len(got) != 0 {
 		t.Errorf("empty = %v, want []", got)
 	}
 }

@@ -47,10 +47,13 @@ func (p *Provider) Handler(w http.ResponseWriter, r *http.Request) {
 	if p.TunnelEnabled && p.TunnelURL != nil {
 		tunnelURL = p.TunnelURL()
 	}
-	if tunnelURL != "" {
-		urls = append(urls, tunnelURL)
-	}
-	urls = append(urls, envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS")...)
+	// urls 只收环境变量的地址, 隧道地址走专属 tunnelURL 字段.
+	// 地址来源 (按优先级排序, 均支持逗号分隔多值):
+	//   DOMAIN: 自绑定的自定义域名
+	//   VERCEL_URL: Vercel 自动注入的部署域名
+	//   NF_HOSTS: 额外主机列表 (逗号分隔)
+	//   RAILWAY_PUBLIC_DOMAIN: Railway 自动注入的公网域名
+	urls = append(urls, envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS", "RAILWAY_PUBLIC_DOMAIN")...)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
