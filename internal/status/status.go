@@ -42,18 +42,21 @@ type Provider struct {
 func (p *Provider) Handler(w http.ResponseWriter, r *http.Request) {
 	p.refreshEgress()
 
-	url := ""
+	urls := []string{}
+	tunnelURL := ""
 	if p.TunnelEnabled && p.TunnelURL != nil {
-		url = p.TunnelURL()
+		tunnelURL = p.TunnelURL()
 	}
-	if url == "" {
-		url = publicURL()
+	if tunnelURL != "" {
+		urls = append(urls, tunnelURL)
 	}
+	urls = append(urls, envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS")...)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"tunnel":     p.TunnelEnabled,
-		"url":        url,
+		"tunnelURL":  tunnelURL,
+		"urls":       urls,
 		"ipv4":       boolOr(p.IPv4Supported, true),
 		"ipv6":       boolOr(p.IPv6Supported, true),
 		"egressIPv4": p.egressIP(false),
@@ -164,18 +167,30 @@ func checkConfigKey(r *http.Request) bool {
 	return r.Header.Get("X-Config-Key") == expected
 }
 
-// publicURL 公网访问地址: 自定义 DOMAIN 优先, 其次 Vercel 自动注入的 VERCEL_URL,
-// 都没有返回空字符串.
-func publicURL() string {
-	host := strings.TrimSpace(os.Getenv("DOMAIN"))
-	if host == "" {
-		host = strings.TrimSpace(os.Getenv("VERCEL_URL"))
+// envHosts 从多个环境变量收集公网地址 (单个或逗号分隔多值),
+// 归一化为 https://host 并去重去空, 顺序即参数顺序.
+func envHosts(names ...string) []string {
+	out := []string{}
+	seen := make(map[string]struct{})
+	for _, name := range names {
+		for _, part := range strings.Split(os.Getenv(name), ",") {
+			host := strings.TrimSpace(part)
+			if host == "" {
+				continue
+			}
+			host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
+			host = strings.TrimSuffix(host, "/")
+			if host == "" {
+				continue
+			}
+			u := "https://" + host
+			if _, dup := seen[u]; !dup {
+				seen[u] = struct{}{}
+				out = append(out, u)
+			}
+		}
 	}
-	if host == "" {
-		return ""
-	}
-	host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
-	return "https://" + strings.TrimSuffix(host, "/")
+	return out
 }
 
 // boolOr 取闭包值, 闭包为 nil 时回退默认值 (乐观默认支持)

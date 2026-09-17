@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,10 @@ func TestConfigHandlerAuth(t *testing.T) {
 	if !ok || entry["up"] != "1.00 KB" || entry["down"] != "0 B" {
 		t.Errorf("traffic entry = %v, want up=1.00 KB down=0 B", entry)
 	}
+	// 隧道未开启时 tunnelURL 为空 (url 走 DOMAIN/VERCEL_URL 回退)
+	if body["tunnel"] != false || body["tunnelURL"] != "" {
+		t.Errorf("tunnel fields = %v/%v, want false/empty", body["tunnel"], body["tunnelURL"])
+	}
 
 	// header key 通过
 	if rec := call("", "s3cr3t"); rec.Code != http.StatusOK {
@@ -82,30 +87,26 @@ func TestConfigHandlerAuth(t *testing.T) {
 	}
 }
 
-func TestPublicURLPrecedence(t *testing.T) {
-	// DOMAIN 优先于 VERCEL_URL
-	t.Setenv("DOMAIN", "example.com")
+func TestEnvHosts(t *testing.T) {
+	// 多变量 + 逗号多值 + 归一化 + 去重去空
+	t.Setenv("DOMAIN", "example.com, https://a.com/, example.com, ,")
 	t.Setenv("VERCEL_URL", "xxx.vercel.app")
-	if got := publicURL(); got != "https://example.com" {
-		t.Errorf("both set = %q, want https://example.com", got)
+	t.Setenv("NF_HOSTS", "h1.com,h2.com,h1.com")
+	want := []string{
+		"https://example.com", "https://a.com",
+		"https://xxx.vercel.app",
+		"https://h1.com", "https://h2.com",
+	}
+	if got := envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS"); !reflect.DeepEqual(got, want) {
+		t.Errorf("envHosts = %v, want %v", got, want)
 	}
 
-	// 带 scheme/斜杠自动归一化
-	t.Setenv("DOMAIN", "https://example.com/")
-	if got := publicURL(); got != "https://example.com" {
-		t.Errorf("normalize = %q, want https://example.com", got)
-	}
-
-	// DOMAIN 为空回退 VERCEL_URL
+	// 全空返回空数组 (JSON 为 [] 而非 null)
 	t.Setenv("DOMAIN", "")
-	if got := publicURL(); got != "https://xxx.vercel.app" {
-		t.Errorf("fallback = %q, want https://xxx.vercel.app", got)
-	}
-
-	// 都没有返回空
 	t.Setenv("VERCEL_URL", "")
-	if got := publicURL(); got != "" {
-		t.Errorf("empty = %q, want empty", got)
+	t.Setenv("NF_HOSTS", " , ")
+	if got := envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS"); len(got) != 0 {
+		t.Errorf("empty = %v, want []", got)
 	}
 }
 

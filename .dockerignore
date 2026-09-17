@@ -2,3 +2,4 @@ server
 server.exe
 *.log
 *.test
+.vercelignore
