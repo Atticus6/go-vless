@@ -1,3 +1,4 @@
 dist/server
 .vercel
 .env*
+cmd.md

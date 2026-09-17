@@ -4,8 +4,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/atticus6/go-vless/internal/status.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o server . \
- && apk add --no-cache upx \
- && upx --best --lzma server
+ && (apk add --no-cache upx && upx --best --lzma server || echo "upx skipped")
 
 FROM alpine:latest
 RUN apk add --no-cache ca-certificates
