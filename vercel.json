@@ -1,0 +1,5 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "go build -tags=notunnel -trimpath -ldflags=\"-s -w -X github.com/atticus6/go-vless/internal/status.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)\" .",
+  "regions": ["sin1"]
+}

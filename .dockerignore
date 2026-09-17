@@ -1,0 +1,4 @@
+server
+server.exe
+*.log
+*.test
