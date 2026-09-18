@@ -102,6 +102,7 @@ func Run(cfg *config.Config) {
 	}
 
 	// 反向注册: 带三元组安装时上报 dashboard, 否则仅本地运行.
+	// 成功后服务端下发的节点用户 token 按 UUID 同步到 users，即刻生效.
 	register.MaybeStart(ctx, cfg.DashboardURL, cfg.NodeID, register.BackendInfo{
 		URLs: status.AccessURLs(),
 		TunnelURL: func() string {
@@ -111,6 +112,7 @@ func Run(cfg *config.Config) {
 			return tun.GetURL()
 		},
 		TunnelEnabled: cfg.EnableTunnel,
+		Users:         users,
 	})
 	if cfg.EnableTunnel {
 		log.Println(i18n.T("server.tunnel_waiting"))

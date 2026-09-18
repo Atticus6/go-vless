@@ -32,6 +32,7 @@
   "register.do_fail": "[WARN] 上报 dashboard: 请求失败: %v",
   "register.enc_fail": "[WARN] 上报 dashboard: 编码失败: %v",
   "register.ok": "[INFO] 已成功注册到 dashboard",
+  "register.users_synced": "[INFO] 已从服务端同步节点用户: 新增 %d 个, 移除 %d 个 UUID",
   "register.req_fail": "[WARN] 上报 dashboard: 构造请求失败: %v",
   "register.skipped": "[INFO] 未配置注册三元组 (REGISTER_URL/节点ID/CONFIG_KEY 缺失), 仅本地运行",
   "register.unauth": "[WARN] 上报 dashboard: 未授权, 请检查节点 ID 与 CONFIG_KEY 是否与 dashboard 一致",

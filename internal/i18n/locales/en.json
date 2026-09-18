@@ -32,6 +32,7 @@
   "register.do_fail": "[WARN] dashboard register: request failed: %v",
   "register.enc_fail": "[WARN] dashboard register: encode failed: %v",
   "register.ok": "[INFO] dashboard registered",
+  "register.users_synced": "[INFO] synced node users from server: %d added, %d removed UUID(s)",
   "register.req_fail": "[WARN] dashboard register: build request failed: %v",
   "register.skipped": "[INFO] dashboard register skipped (REGISTER_URL/NODE_ID/CONFIG_KEY not all set)",
   "register.unauth": "[WARN] dashboard register: unauthorized, check node id and CONFIG_KEY match dashboard",

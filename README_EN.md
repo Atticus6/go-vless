@@ -94,7 +94,7 @@ CONFIG_KEY=<config_key> go run . \
   --port 8080
 ```
 
-Registers with the dashboard once at startup (stops after success, retries every 60s on failure); missing any of the three means proxy-only, no registration.
+Registers with the dashboard at startup and keeps a heartbeat: after success it fully syncs UUIDs every 30 minutes (server-issued interval wins), retries every 60s on failure; missing any of the three means proxy-only, no registration.
 
 ## Admin page
 
