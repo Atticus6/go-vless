@@ -238,3 +238,75 @@ func TestUserTokenAuth(t *testing.T) {
 		t.Error("token should work without CONFIG_KEY")
 	}
 }
+
+// /config 的 register 段：未配置只给 enabled=false；
+// 启用后展示目标地址、最近成功/错误、对账数与下次同步倒计时，且不泄露密钥.
+func TestConfigHandlerRegisterSection(t *testing.T) {
+	t.Setenv("CONFIG_KEY", "s3cr3t")
+	ResetRegisterSnapshot()
+	defer ResetRegisterSnapshot()
+	never := func() bool { return false }
+	p := &Provider{StartedAt: time.Now(), IPv4Supported: never, IPv6Supported: never}
+	mux := testMux(p)
+	get := func() map[string]any {
+		req := httptest.NewRequest(http.MethodGet, "/config?key=s3cr3t", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200", rec.Code)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("bad json: %v", err)
+		}
+		reg, ok := body["register"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing register section: %v", body)
+		}
+		return reg
+	}
+
+	// 默认未配置.
+	if reg := get(); reg["enabled"] != false {
+		t.Errorf("default register = %v, want enabled=false", reg)
+	}
+
+	// 成功心跳后.
+	SetRegisterTarget(true, "https://dash.example.com", "node-1")
+	SetRegisterSuccess(2, 1, 5, 1800)
+	reg := get()
+	if reg["enabled"] != true {
+		t.Errorf("enabled = %v, want true", reg["enabled"])
+	}
+	if reg["dashboardUrl"] != "https://dash.example.com" || reg["nodeId"] != "node-1" {
+		t.Errorf("target = %v/%v", reg["dashboardUrl"], reg["nodeId"])
+	}
+	if s, _ := reg["lastSuccessAt"].(string); s == "" {
+		t.Errorf("lastSuccessAt = %v, want RFC3339 timestamp", reg["lastSuccessAt"])
+	}
+	if reg["lastError"] != nil {
+		t.Errorf("lastError = %v, want nil after success", reg["lastError"])
+	}
+	if reg["syncedUsers"] != float64(5) || reg["lastSyncAdded"] != float64(2) || reg["lastSyncRemoved"] != float64(1) {
+		t.Errorf("sync numbers = %v", reg)
+	}
+	if reg["heartbeatIntervalSec"] != float64(1800) {
+		t.Errorf("heartbeatIntervalSec = %v, want 1800", reg["heartbeatIntervalSec"])
+	}
+	if next, _ := reg["nextSyncInSec"].(float64); next <= 0 || next > 1800 {
+		t.Errorf("nextSyncInSec = %v, want (0,1800]", reg["nextSyncInSec"])
+	}
+
+	// 失败心跳后：保留上次成功时间，记下错误原文（如 context deadline exceeded）.
+	SetRegisterFailure(`Post "https://dash.example.com/api/nodes/register": context deadline exceeded`, 60)
+	reg = get()
+	if s, _ := reg["lastSuccessAt"].(string); s == "" {
+		t.Error("lastSuccessAt should survive a failure")
+	}
+	if reg["lastError"] == nil || reg["lastError"] == "" {
+		t.Errorf("lastError = %v, want failure message", reg["lastError"])
+	}
+	if next, _ := reg["nextSyncInSec"].(float64); next <= 0 || next > 60 {
+		t.Errorf("nextSyncInSec = %v, want (0,60] after failure", reg["nextSyncInSec"])
+	}
+}

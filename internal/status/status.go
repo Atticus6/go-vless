@@ -77,6 +77,7 @@ func (p *Provider) Handler(w http.ResponseWriter, r *http.Request) {
 		"egressIPv4": p.egressIP(false),
 		"egressIPv6": p.egressIP(true),
 		"users":      formatTraffic(p.userTraffic()),
+		"register":   registerView(),
 		"buildTime":  getBuildTime(),
 		"binarySize": getBinarySize(),
 		"memory":     getMemUsage(),
@@ -184,6 +185,107 @@ type userTokenStore struct {
 }
 
 var userTokens = &userTokenStore{m: make(map[string]struct{})}
+
+// RegisterSnapshot 节点端视角的服务端（dashboard）注册/同步状态.
+// /config 原样返回，供展示“有没有连上服务端”等信息；
+// 不含任何密钥（CONFIG_KEY 永不出现），只读快照，重启清空.
+type RegisterSnapshot struct {
+	Enabled       bool
+	DashboardURL  string
+	NodeID        string
+	LastReportAt  time.Time
+	LastSuccessAt time.Time
+	LastError     string
+	LastSyncAdded int
+	LastSyncRemov int
+	SyncedUsers   int
+	IntervalSec   int
+}
+
+var registerState = struct {
+	sync.RWMutex
+	snap RegisterSnapshot
+}{}
+
+// SetRegisterTarget 记录注册目标（心跳启动时调一次）；未配置则记为禁用.
+func SetRegisterTarget(enabled bool, dashboardURL, nodeID string) {
+	registerState.Lock()
+	defer registerState.Unlock()
+	registerState.snap.Enabled = enabled
+	registerState.snap.DashboardURL = dashboardURL
+	registerState.snap.NodeID = nodeID
+}
+
+// SetRegisterSuccess 记录一次成功心跳：清空最近错误，记下对账结果与下发周期.
+func SetRegisterSuccess(added, removed, syncedTotal, intervalSec int) {
+	registerState.Lock()
+	defer registerState.Unlock()
+	now := time.Now()
+	registerState.snap.LastReportAt = now
+	registerState.snap.LastSuccessAt = now
+	registerState.snap.LastError = ""
+	registerState.snap.LastSyncAdded = added
+	registerState.snap.LastSyncRemov = removed
+	registerState.snap.SyncedUsers = syncedTotal
+	registerState.snap.IntervalSec = intervalSec
+}
+
+// SetRegisterFailure 记录一次失败心跳：记下最近错误（截断防爆），同步数保持上次.
+func SetRegisterFailure(errMsg string, retrySec int) {
+	registerState.Lock()
+	defer registerState.Unlock()
+	registerState.snap.LastReportAt = time.Now()
+	registerState.snap.LastError = errMsg
+	registerState.snap.IntervalSec = retrySec
+}
+
+// GetRegisterSnapshot 取当前快照（/config 展示与测试用）.
+func GetRegisterSnapshot() RegisterSnapshot {
+	registerState.RLock()
+	defer registerState.RUnlock()
+	return registerState.snap
+}
+
+// ResetRegisterSnapshot 清空快照（仅测试用）.
+func ResetRegisterSnapshot() {
+	registerState.Lock()
+	registerState.snap = RegisterSnapshot{}
+	registerState.Unlock()
+}
+
+// registerView /config 的 register 段视图：时间转 RFC3339（从未成功/无错误给 null），
+// 下次同步倒计时在请求时现算.
+func registerView() map[string]any {
+	s := GetRegisterSnapshot()
+	view := map[string]any{"enabled": s.Enabled}
+	if !s.Enabled {
+		return view
+	}
+	view["dashboardUrl"] = s.DashboardURL
+	view["nodeId"] = s.NodeID
+	if s.LastSuccessAt.IsZero() {
+		view["lastSuccessAt"] = nil
+	} else {
+		view["lastSuccessAt"] = s.LastSuccessAt.UTC().Format(time.RFC3339)
+	}
+	if s.LastError == "" {
+		view["lastError"] = nil
+	} else {
+		view["lastError"] = s.LastError
+	}
+	view["lastSyncAdded"] = s.LastSyncAdded
+	view["lastSyncRemoved"] = s.LastSyncRemov
+	view["syncedUsers"] = s.SyncedUsers
+	view["heartbeatIntervalSec"] = s.IntervalSec
+	next := 0
+	if !s.LastReportAt.IsZero() && s.IntervalSec > 0 {
+		if remain := s.IntervalSec - int(time.Since(s.LastReportAt).Seconds()); remain > 0 {
+			next = remain
+		}
+	}
+	view["nextSyncInSec"] = next
+	return view
+}
 
 // SetUserTokens 全量替换已注册的用户 token（注册成功后由注册流程调用）.
 func SetUserTokens(tokens []string) {

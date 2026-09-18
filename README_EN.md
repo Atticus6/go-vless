@@ -104,7 +104,7 @@ Open in a browser (a missing/wrong password gives 404 — that's by design):
 http://<server-ip>:<port>/config?key=<CONFIG_KEY>
 ```
 
-Shows: tunnel on/off, tunnel address, usable addresses, the server's public IP, **traffic per user**, memory usage, uptime.
+Shows: tunnel on/off, tunnel address, usable addresses, the server's public IP, **traffic per user**, memory usage, uptime, and the **dashboard registration status** (`register` section: enabled or not, last successful sync, last error, next-sync countdown, synced user count).
 
 Traffic: `up` = sent by the user, `down` = received by the user; **counters reset on restart** (same after a serverless sleep/wake cycle).
 

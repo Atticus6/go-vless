@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -67,21 +68,26 @@ type BackendInfo struct {
 
 // MaybeStart 配置齐全时起注册/心跳协程, 缺配置直接返回 (只启动代理服务).
 // 调用方负责 go 出去, ctx 取消时协程退出.
+// 无论是否启用都会刷新 /config 的 register 段快照，供展示连接状态.
 func MaybeStart(ctx context.Context, dashboardURL, nodeID string, info BackendInfo) {
 	key := os.Getenv("CONFIG_KEY")
 	if dashboardURL == "" || nodeID == "" || key == "" {
+		status.SetRegisterTarget(false, "", "")
 		log.Println(i18n.T("register.skipped"))
 		return
 	}
 	if _, err := uuid.Parse(nodeID); err != nil {
+		status.SetRegisterTarget(false, "", "")
 		log.Printf(i18n.T("register.bad_node"), err)
 		return
 	}
 	u, err := url.Parse(dashboardURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		status.SetRegisterTarget(false, "", "")
 		log.Printf(i18n.T("register.bad_url"), dashboardURL)
 		return
 	}
+	status.SetRegisterTarget(true, dashboardURL, nodeID)
 	endpoint := strings.TrimSuffix(dashboardURL, "/") + "/api/nodes/register"
 	go loop(ctx, endpoint, nodeID, key, info)
 }
@@ -133,43 +139,65 @@ func report(endpoint, nodeID, key string, info BackendInfo) (bool, int) {
 		TunnelURL: tunnelURL,
 	})
 	if err != nil {
-		log.Printf(i18n.T("register.enc_fail"), err)
-		return false, retryIntervalSec
+		return fail("encode: "+err.Error(), err, "register.enc_fail")
 	}
 	reqCtx, cancel := context.WithTimeout(context.Background(), httpTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		log.Printf(i18n.T("register.req_fail"), err)
-		return false, retryIntervalSec
+		return fail("build request: "+err.Error(), err, "register.req_fail")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf(i18n.T("register.do_fail"), err)
-		return false, retryIntervalSec
+		// 出站超时/DNS/建连失败都走这里，err 文案（如 context deadline exceeded）
+		// 同步记入 /config 的 register.lastError，方便排查哪一段卡住.
+		return fail(err.Error(), err, "register.do_fail")
 	}
 	defer res.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
 	if res.StatusCode != http.StatusOK {
 		if res.StatusCode == http.StatusUnauthorized {
+			status.SetRegisterFailure("unauthorized (401): check node id and key", retryIntervalSec)
 			log.Println(i18n.T("register.unauth"))
 		} else {
+			msg := fmt.Sprintf("http %d: %s", res.StatusCode, truncateErr(string(raw)))
+			status.SetRegisterFailure(msg, retryIntervalSec)
 			log.Printf(i18n.T("register.bad_code"), res.StatusCode, raw)
 		}
 		return false, retryIntervalSec
 	}
 	var out registerResponse
 	if err := json.Unmarshal(raw, &out); err != nil || !out.OK {
+		msg := "bad response: " + truncateErr(string(raw))
+		status.SetRegisterFailure(msg, retryIntervalSec)
 		log.Printf(i18n.T("register.bad_resp"), raw)
 		return false, retryIntervalSec
 	}
 	// 每次心跳全量同步：所属用户的 token 进内存供 /config 鉴权
 	// （重启清空，下次心跳重建），同时按 UUID 对账到 VLESS 注册表.
 	status.SetUserTokens(out.UserTokens)
-	syncUserTokens(info.Users, out.UserTokens)
+	added, removed, total := syncUserTokens(info.Users, out.UserTokens)
+	waitSec := effectiveInterval(out.HeartbeatIntervalSec)
+	status.SetRegisterSuccess(added, removed, total, waitSec)
 	log.Println(i18n.T("register.ok"))
-	return true, effectiveInterval(out.HeartbeatIntervalSec)
+	return true, waitSec
+}
+
+// fail 记录失败快照并打日志的公共出口：快照记短文案，日志走 i18n 模板.
+func fail(msg string, err error, logKey string) (bool, int) {
+	status.SetRegisterFailure(truncateErr(msg), retryIntervalSec)
+	log.Printf(i18n.T(logKey), err)
+	return false, retryIntervalSec
+}
+
+// truncateErr 快照错误文案截断到 200 字符，防止超大响应体撑爆快照.
+func truncateErr(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 200 {
+		return s[:200]
+	}
+	return s
 }
 
 // syncUserTokens 把服务端下发的 token 按 UUID 全量对账到注册表.
@@ -182,7 +210,7 @@ var (
 	serverSynced   = make(map[uuid.UUID]struct{})
 )
 
-func syncUserTokens(reg *user.Registry, tokens []string) {
+func syncUserTokens(reg *user.Registry, tokens []string) (added, removed, total int) {
 	want := make(map[uuid.UUID]struct{}, len(tokens))
 	for _, t := range tokens {
 		id, err := uuid.Parse(t)
@@ -205,11 +233,11 @@ func syncUserTokens(reg *user.Registry, tokens []string) {
 		}
 	}
 	serverSynced = want
+	total = len(want)
 	serverSyncedMu.Unlock()
 	if reg == nil {
-		return
+		return 0, 0, total
 	}
-	added := 0
 	for _, id := range toAdd {
 		if !reg.Valid(id) {
 			reg.Add(id)
@@ -218,7 +246,6 @@ func syncUserTokens(reg *user.Registry, tokens []string) {
 			reg.Add(id)
 		}
 	}
-	removed := 0
 	for _, id := range toRemove {
 		if reg.Remove(id) {
 			removed++
@@ -227,6 +254,7 @@ func syncUserTokens(reg *user.Registry, tokens []string) {
 	if added > 0 || removed > 0 {
 		log.Printf(i18n.T("register.users_synced"), added, removed)
 	}
+	return added, removed, total
 }
 
 // resetSyncState 仅测试用：清空服务端下发快照，隔离各用例.
