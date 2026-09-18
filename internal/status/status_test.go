@@ -172,3 +172,69 @@ func TestConfigUsersManage(t *testing.T) {
 		t.Errorf("original user lost")
 	}
 }
+
+func TestParseUUIDBodyLanguage(t *testing.T) {
+	t.Setenv("CONFIG_KEY", "s3cr3t")
+	users := user.New([]uuid.UUID{uuid.New()})
+	p := &Provider{Users: users, StartedAt: time.Now()}
+	mux := testMux(p)
+
+	post := func(acceptLang string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/config/users/add?key=s3cr3t", strings.NewReader(`{"uuids":["zzz"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		if acceptLang != "" {
+			req.Header.Set("Accept-Language", acceptLang)
+		}
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 默认/英文
+	if rec := post(""); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid UUID") {
+		t.Errorf("default body = %q, want English invalid UUID", rec.Body.String())
+	}
+	// 中文协商
+	if rec := post("zh-CN,zh;q=0.9"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "非法 UUID") {
+		t.Errorf("zh body = %q, want Chinese 非法 UUID", rec.Body.String())
+	}
+}
+
+// 已注册的用户 token 与 CONFIG_KEY 等效（query 与 header 双通道）；
+// 未注册/空一律拒绝；CONFIG_KEY 未设置时 token 照样可用.
+func TestUserTokenAuth(t *testing.T) {
+	withKey := func(query, header string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "/config"+query, nil)
+		if header != "" {
+			req.Header.Set("X-Config-Key", header)
+		}
+		return req
+	}
+
+	t.Setenv("CONFIG_KEY", "s3cr3t")
+	SetUserTokens([]string{"tok-1", ""})
+	defer SetUserTokens(nil)
+
+	cases := []struct {
+		name string
+		req  *http.Request
+		want bool
+	}{
+		{"query token", withKey("?key=tok-1", ""), true},
+		{"header token", withKey("", "tok-1"), true},
+		{"master key", withKey("?key=s3cr3t", ""), true},
+		{"wrong query", withKey("?key=nope", ""), false},
+		{"wrong header", withKey("", "nope"), false},
+		{"empty", withKey("", ""), false},
+	}
+	for _, tc := range cases {
+		if got := checkConfigKey(tc.req); got != tc.want {
+			t.Errorf("%s: checkConfigKey = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	t.Setenv("CONFIG_KEY", "")
+	if !checkConfigKey(withKey("?key=tok-1", "")) {
+		t.Error("token should work without CONFIG_KEY")
+	}
+}

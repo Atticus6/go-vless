@@ -9,6 +9,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/atticus6/go-vless/internal/i18n"
 )
 
 // 出口连通性探测常量
@@ -48,9 +50,9 @@ func (s *Server) refreshEgress(first bool) {
 	if !changed {
 		return
 	}
-	log.Printf("[NET] egress check: IPv4=%s IPv6=%s", okStr(v4), okStr(v6))
+	log.Printf(i18n.T("probe.egress"), okStr(v4), okStr(v6))
 	if !v4 || !v6 {
-		log.Printf("[NET] targets in unavailable family will be rejected without dial")
+		log.Println(i18n.T("probe.reject_no_dial"))
 	}
 }
 
@@ -71,12 +73,12 @@ func (s *Server) learnFromDialError(targetAddr string, err error) {
 	}
 	if ip.To4() != nil {
 		if s.hasIPv4.CompareAndSwap(true, false) {
-			log.Printf("[NET] egress IPv4 looks unavailable (dial %s: %v), future IPv4 targets will be rejected without dial", targetAddr, err)
+			log.Printf(i18n.T("probe.v4_down"), targetAddr, err)
 		}
 		return
 	}
 	if s.hasIPv6.CompareAndSwap(true, false) {
-		log.Printf("[NET] egress IPv6 looks unavailable (dial %s: %v), future IPv6 targets will be rejected without dial", targetAddr, err)
+		log.Printf(i18n.T("probe.v6_down"), targetAddr, err)
 	}
 }
 
@@ -174,11 +176,11 @@ func (s *Server) familyAllowed(host string) bool {
 func (s *Server) rejectReason(host string) string {
 	if ip := net.ParseIP(host); ip != nil {
 		if ip.To4() != nil {
-			return "no IPv4 egress"
+			return i18n.T("vless.no_ipv4")
 		}
-		return "no IPv6 egress"
+		return i18n.T("vless.no_ipv6")
 	}
-	return "no reachable address family"
+	return i18n.T("vless.no_family")
 }
 
 type cachedIPs struct {
@@ -198,7 +200,7 @@ func lookupCached(host string) []net.IP {
 	defer cancel()
 	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 	if err != nil {
-		log.Printf("[WARN] DNS lookup %s failed: %v", host, err)
+		log.Printf(i18n.T("probe.dns_fail"), host, err)
 		return nil
 	}
 	dnsCache.Store(host, cachedIPs{ips: ips, exp: time.Now().Add(dnsCacheTTL)})

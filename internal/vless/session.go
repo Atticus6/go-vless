@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/atticus6/go-vless/internal/i18n"
 	"github.com/atticus6/go-vless/internal/user"
 	"github.com/gorilla/websocket"
 )
@@ -57,7 +58,7 @@ func (s *session) writeWS(data []byte) error {
 	s.wsMu.Lock()
 	defer s.wsMu.Unlock()
 	if s.closed.Load() {
-		return fmt.Errorf("session closed")
+		return fmt.Errorf("%s", i18n.T("session.closed"))
 	}
 	// 慢客户端最多拖住本次写 writeTimeout, 不会永久占住 wsMu
 	_ = s.ws.SetWriteDeadline(time.Now().Add(writeTimeout))
@@ -103,14 +104,14 @@ func (s *Server) handleTCPSession(session *session, targetAddr string, payload [
 	conn, err := tcpDialer.DialContext(context.Background(), "tcp", targetAddr)
 	if err != nil {
 		s.learnFromDialError(targetAddr, err)
-		log.Printf("[ERROR] Failed to connect to %s: %v", targetAddr, err)
+		log.Printf(i18n.T("session.dial_fail"), targetAddr, err)
 		return
 	}
 	session.setRemote(conn)
 
 	// 发送 VLESS 响应头
 	if err := session.writeWS([]byte{vlessVersion, 0}); err != nil {
-		log.Printf("[ERROR] Failed to send VLESS response: %v", err)
+		log.Printf(i18n.T("session.resp_fail"), err)
 		return
 	}
 
@@ -118,7 +119,7 @@ func (s *Server) handleTCPSession(session *session, targetAddr string, payload [
 	if len(payload) > 0 {
 		_ = conn.SetWriteDeadline(time.Now().Add(dialTimeout))
 		if n, err := conn.Write(payload); err != nil {
-			log.Printf("[ERROR] Failed to write payload to %s: %v", targetAddr, err)
+			log.Printf(i18n.T("session.write_fail"), targetAddr, err)
 			return
 		} else {
 			session.stats.AddUp(n)
@@ -187,14 +188,14 @@ func (s *Server) handleUDPSession(session *session, targetAddr string, initialPa
 	conn, err := udpDialer.DialContext(context.Background(), "udp", targetAddr)
 	if err != nil {
 		s.learnFromDialError(targetAddr, err)
-		log.Printf("[ERROR] Failed to dial UDP %s: %v", targetAddr, err)
+		log.Printf(i18n.T("session.udp_dial"), targetAddr, err)
 		return
 	}
 	session.setRemote(conn)
 
 	// 发送 VLESS 响应头
 	if err := session.writeWS([]byte{vlessVersion, 0}); err != nil {
-		log.Printf("[ERROR] Failed to send VLESS UDP response: %v", err)
+		log.Printf(i18n.T("session.udp_resp"), err)
 		return
 	}
 
@@ -218,7 +219,7 @@ func (s *Server) handleUDPSession(session *session, targetAddr string, initialPa
 				// idle 超时是正常回收, 不打日志; 其他错误给 WARN
 				if err != nil {
 					if nerr, ok := err.(net.Error); !ok || !nerr.Timeout() {
-						log.Printf("[WARN] UDP read from %s ended: %v", targetAddr, err)
+						log.Printf(i18n.T("session.udp_read"), targetAddr, err)
 					}
 				}
 				closeDone()
@@ -263,7 +264,7 @@ func forwardUDPPayload(conn net.Conn, session *session, data []byte) {
 	for {
 		if offset+2 > len(data) {
 			if offset != len(data) {
-				log.Printf("[WARN] Truncated UDP length header: %d bytes left", len(data)-offset)
+				log.Printf(i18n.T("session.udp_trunc_h"), len(data)-offset)
 			}
 			break // 截断包静默丢弃, 高并发下不打日志
 		}
@@ -273,7 +274,7 @@ func forwardUDPPayload(conn net.Conn, session *session, data []byte) {
 			continue
 		}
 		if offset+pktLen > len(data) {
-			log.Printf("[WARN] Truncated UDP packet: need %d, have %d", pktLen, len(data)-offset)
+			log.Printf(i18n.T("session.udp_trunc_p"), pktLen, len(data)-offset)
 			break
 		}
 		if session.isClosed() {

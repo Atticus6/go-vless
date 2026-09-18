@@ -5,6 +5,8 @@ package tunnel
 import (
 	"context"
 	"log"
+
+	"github.com/atticus6/go-vless/internal/i18n"
 )
 
 // Tunnel 是 cloudflared 隧道的空实现.
@@ -25,7 +27,7 @@ func New(localPort int, protocol string) *Tunnel {
 
 // Start 在 notunnel 构建下直接跳过, 返回 nil 让 main 流程不受影响.
 func (t *Tunnel) Start(_ context.Context) error {
-	log.Println("[Tunnel] tunnel disabled by build tag `notunnel` (e.g. Vercel), skip")
+	log.Println(i18n.T("tunnel.notunnel"))
 	return nil
 }
 

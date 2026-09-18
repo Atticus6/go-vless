@@ -55,8 +55,46 @@ Everything lives in env vars; restart after changing (recreate Docker, restart t
 | `TUNNEL_PROTO`  | `auto`  | If the tunnel won't connect, try `quic` or `http2`      |
 | `MAX_CONN`      | `4096`  | Max users online at once, newcomers refused beyond that |
 | `CONFIG_KEY`    | empty   | Admin page password; **empty means the admin page won't open (404)** |
+| `REGISTER_URL` | empty | Dashboard address; registers only when set |
+| `REGISTER_NODE_ID` | empty | Node id assigned by the dashboard |
 | `DOMAIN`        | empty   | Your own domain, shown on the admin page                |
 | `VERCEL_URL` / `NF_HOSTS` / `RAILWAY_PUBLIC_DOMAIN` | empty | Platform-provided addresses, shown on the admin page |
+| `GO_VLESS_LANG` | empty (follows `LANG`) | Message language: `zh` Chinese / `en` English (`--lang` flag wins) |
+
+### Language
+
+Logs, `--help`, HTTP error messages and `install.sh` prompts are bilingual (zh/en).
+English by default (when `LANG=C` or unset); a `LANG` starting with `zh` switches to Chinese:
+
+```bash
+LANG=zh_CN.UTF-8 go run . --port 8080   # Chinese logs
+go run . --lang zh --port 8080          # explicit override (highest priority)
+GO_VLESS_LANG=en ./install.sh           # force English installer
+```
+
+HTTP API errors (e.g. `/config/users/add`) negotiate via the request's `Accept-Language`
+header; JSON field names stay in English.
+
+### Local dev: `go run .` with dashboard registration
+
+```bash
+# split the triple (grab id/key from the node copy-install-command on the dashboard)
+CONFIG_KEY=<config_key> \
+REGISTER_URL=http://localhost:5173 \
+REGISTER_NODE_ID=<node-id> \
+go run . --port 8080
+```
+
+Or with flags (`CONFIG_KEY` still comes from env):
+
+```bash
+CONFIG_KEY=<config_key> go run . \
+  --dashboard-url http://localhost:5173 \
+  --node-id <node-id> \
+  --port 8080
+```
+
+Registers with the dashboard once at startup (stops after success, retries every 60s on failure); missing any of the three means proxy-only, no registration.
 
 ## Admin page
 

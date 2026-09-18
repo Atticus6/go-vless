@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/atticus6/go-vless/internal/config"
+	"github.com/atticus6/go-vless/internal/i18n"
+	"github.com/atticus6/go-vless/internal/register"
 	"github.com/atticus6/go-vless/internal/status"
 	"github.com/atticus6/go-vless/internal/user"
 	"github.com/atticus6/go-vless/internal/vless"
@@ -55,13 +57,13 @@ func Run(cfg *config.Config) {
 		tun = tunnel.New(cfg.Port, cfg.TunnelProto)
 		go func() {
 			if err := tun.Start(ctx); err != nil {
-				log.Printf("[WARN] Failed to start Argo tunnel: %v", err)
+				log.Printf(i18n.T("server.tunnel_fail"), err)
 			}
 		}()
 	}
 
 	users := user.New(cfg.Users)
-	log.Printf("Users: %d UUID(s) loaded", len(cfg.Users))
+	log.Printf(i18n.T("server.users_loaded"), len(cfg.Users))
 	for _, id := range cfg.Users {
 		log.Printf("UUID: %s", id.String())
 	}
@@ -94,17 +96,29 @@ func Run(cfg *config.Config) {
 	// 优雅关闭
 	go gracefulShutdown(srv, tun, cancel)
 
-	log.Printf("VLESS Server listening on :%d", cfg.Port)
+	log.Printf(i18n.T("server.listening"), cfg.Port)
 	if os.Getenv("CONFIG_KEY") == "" {
-		log.Printf("[INFO] CONFIG_KEY not set, /config disabled")
+		log.Println(i18n.T("server.configkey_off"))
 	}
+
+	// 反向注册: 带三元组安装时上报 dashboard, 否则仅本地运行.
+	register.MaybeStart(ctx, cfg.DashboardURL, cfg.NodeID, register.BackendInfo{
+		URLs: status.AccessURLs(),
+		TunnelURL: func() string {
+			if tun == nil {
+				return ""
+			}
+			return tun.GetURL()
+		},
+		TunnelEnabled: cfg.EnableTunnel,
+	})
 	if cfg.EnableTunnel {
-		log.Println("Argo tunnel enabled, waiting for URL...")
+		log.Println(i18n.T("server.tunnel_waiting"))
 	}
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf("Server error: %v", err)
+		log.Fatalf(i18n.T("server.error"), err)
 	}
-	log.Println("Server stopped")
+	log.Println(i18n.T("server.stopped"))
 }
 
 func gracefulShutdown(srv *http.Server, tun *tunnel.Tunnel, cancel context.CancelFunc) {
@@ -112,7 +126,7 @@ func gracefulShutdown(srv *http.Server, tun *tunnel.Tunnel, cancel context.Cance
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("Shutting down server...")
+	log.Println(i18n.T("server.shutdown"))
 	cancel()
 
 	if tun != nil {
@@ -123,6 +137,6 @@ func gracefulShutdown(srv *http.Server, tun *tunnel.Tunnel, cancel context.Cance
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+		log.Printf(i18n.T("server.shutdown_err"), err)
 	}
 }

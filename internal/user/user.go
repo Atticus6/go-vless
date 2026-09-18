@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/atticus6/go-vless/internal/i18n"
 	"github.com/google/uuid"
 )
 
@@ -151,7 +152,7 @@ func ParseList(s string) ([]uuid.UUID, error) {
 		}
 		id, err := uuid.Parse(part)
 		if err != nil {
-			return nil, fmt.Errorf("invalid UUID %q: %w", part, err)
+			return nil, fmt.Errorf("%s", i18n.Sprintf("user.parse_uuid", part, err))
 		}
 		if _, dup := seen[id]; !dup {
 			seen[id] = struct{}{}
@@ -159,7 +160,7 @@ func ParseList(s string) ([]uuid.UUID, error) {
 		}
 	}
 	if len(ids) == 0 {
-		return nil, fmt.Errorf("no valid UUID")
+		return nil, fmt.Errorf("%s", i18n.T("user.no_uuid"))
 	}
 	return ids, nil
 }

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/atticus6/go-vless/internal/i18n"
 	"github.com/atticus6/go-vless/internal/user"
 	"github.com/gorilla/websocket"
 )
@@ -84,9 +85,9 @@ func New(users *user.Registry, maxConns int) *Server {
 
 func okStr(ok bool) string {
 	if ok {
-		return "ok"
+		return i18n.T("probe.ok")
 	}
-	return "unavailable"
+	return i18n.T("probe.unavailable")
 }
 
 // HasIPv4/HasIPv6 当前出口是否支持该地址族 (后台探测 + dial 失败学习共同维护).
@@ -97,10 +98,10 @@ func (s *Server) HasIPv6() bool { return s.hasIPv6.Load() }
 func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 	if strings.ToLower(r.Header.Get("Upgrade")) != "websocket" {
 		if r.URL.Path == "/" {
-			_, _ = w.Write([]byte("Bad Request"))
+			_, _ = w.Write([]byte(i18n.T("vless.bad_request")))
 		} else {
-			log.Printf("[WARN] Expected WebSocket, got Upgrade: %s path: %s", r.Header.Get("Upgrade"), r.URL.Path)
-			http.Error(w, "Expected WebSocket", http.StatusUpgradeRequired)
+			log.Printf(i18n.T("vless.ws_warn"), r.Header.Get("Upgrade"), r.URL.Path)
+			http.Error(w, i18n.T("vless.expected_ws"), http.StatusUpgradeRequired)
 		}
 		return
 	}
@@ -110,14 +111,14 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 	case s.sem <- struct{}{}:
 		defer func() { <-s.sem }()
 	default:
-		log.Printf("[WARN] Server busy, reject %s (max-conn=%d)", r.RemoteAddr, s.max)
-		http.Error(w, "Server busy", http.StatusServiceUnavailable)
+		log.Printf(i18n.T("vless.busy_warn"), r.RemoteAddr, s.max)
+		http.Error(w, i18n.T("vless.busy"), http.StatusServiceUnavailable)
 		return
 	}
 
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("[ERROR] WebSocket upgrade failed: %v", err)
+		log.Printf(i18n.T("vless.upgrade_fail"), err)
 		return
 	}
 
@@ -141,14 +142,14 @@ func (s *Server) handleSession(ws *websocket.Conn, clientAddr string) {
 	_, headerData, err := ws.ReadMessage()
 	if err != nil {
 		if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
-			log.Printf("[ERROR] Failed to read VLESS header from %s: %v", clientAddr, err)
+			log.Printf(i18n.T("vless.header_fail"), clientAddr, err)
 		}
 		return
 	}
 
 	reqID, targetAddr, command, payload, err := parseRequest(headerData, s.users)
 	if err != nil {
-		log.Printf("[ERROR] Invalid VLESS request from %s: %v", clientAddr, err)
+		log.Printf(i18n.T("vless.invalid_req"), clientAddr, err)
 		return
 	}
 
@@ -160,11 +161,11 @@ func (s *Server) handleSession(ws *websocket.Conn, clientAddr string) {
 	// 地址族预检: 出口不支持该族直接拒绝, 省掉 dial 等待
 	host, _, err := net.SplitHostPort(targetAddr)
 	if err != nil {
-		log.Printf("[ERROR] Invalid target addr %q from %s: %v", targetAddr, clientAddr, err)
+		log.Printf(i18n.T("vless.invalid_target"), targetAddr, clientAddr, err)
 		return
 	}
 	if !s.familyAllowed(host) {
-		log.Printf("[WARN] Reject %s from %s: %s", targetAddr, clientAddr, s.rejectReason(host))
+		log.Printf(i18n.T("vless.rejected"), targetAddr, clientAddr, s.rejectReason(host))
 		return
 	}
 
@@ -174,6 +175,6 @@ func (s *Server) handleSession(ws *websocket.Conn, clientAddr string) {
 	case cmdUDP:
 		s.handleUDPSession(session, targetAddr, payload)
 	default:
-		log.Printf("[WARN] Unsupported command: %d", command)
+		log.Printf(i18n.T("vless.bad_cmd"), command)
 	}
 }

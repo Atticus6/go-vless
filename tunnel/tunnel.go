@@ -6,6 +6,8 @@ import (
 	"context"
 	"log"
 	"sync"
+
+	"github.com/atticus6/go-vless/internal/i18n"
 )
 
 // Tunnel 管理 Cloudflare Argo 隧道 (与 apps/node/tunnel 保持一致)
@@ -42,7 +44,7 @@ func (t *Tunnel) Start(ctx context.Context) error {
 	t.url = url
 	t.mu.Unlock()
 
-	log.Printf("[Tunnel] Argo tunnel established: %s", url)
+	log.Printf(i18n.T("tunnel.established"), url)
 	return nil
 }
 
@@ -50,7 +52,7 @@ func (t *Tunnel) Start(ctx context.Context) error {
 func (t *Tunnel) Stop() {
 	if t.cancel != nil {
 		t.cancel()
-		log.Println("[Tunnel] Argo tunnel stopped")
+		log.Println(i18n.T("tunnel.stopped"))
 	}
 }
 

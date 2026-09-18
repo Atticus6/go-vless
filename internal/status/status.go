@@ -4,6 +4,7 @@
 package status
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,9 +13,11 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/atticus6/go-vless/internal/i18n"
 	"github.com/atticus6/go-vless/internal/user"
 	"github.com/google/uuid"
 )
@@ -36,7 +39,16 @@ type Provider struct {
 	egressV6 atomic.Value // egressCache, 出口 IPv6 (按需刷新)
 }
 
-// Handler 管理员信息页 (鉴权由 WithConfigKey 中间件完成).
+// AccessURLs 对外访问地址（与 /config 的 urls 同源），反向注册上报用.
+func AccessURLs() []string {
+	return envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS", "RAILWAY_PUBLIC_DOMAIN")
+}
+
+// BuildVersion 构建版本（反向注册上报用），与状态页 buildTime 同源.
+func BuildVersion() string {
+	return getBuildTime()
+}
+
 // tunnel=true 时 url 为 Argo 隧道地址 (刚启动还在建连时会为空, 刷新重试);
 // tunnel=false 时 (如 Vercel) url 取 VERCEL_URL 拼出的 https 地址.
 func (p *Provider) Handler(w http.ResponseWriter, r *http.Request) {
@@ -113,9 +125,11 @@ func (p *Provider) RemoveUsersHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseUUIDBody 解析 {"uuids":[...]} 请求体, 失败时直接写 400/500 并返回 ok=false.
+// 报错文案按请求的 Accept-Language 协商 (中英双语).
 func (p *Provider) parseUUIDBody(w http.ResponseWriter, r *http.Request) ([]uuid.UUID, bool) {
+	lang := i18n.LangFromAcceptLanguage(r.Header.Get("Accept-Language"))
 	if p.Users == nil {
-		http.Error(w, "user registry unavailable", http.StatusInternalServerError)
+		http.Error(w, i18n.TFor(lang, "status.no_registry"), http.StatusInternalServerError)
 		return nil, false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
@@ -123,12 +137,12 @@ func (p *Provider) parseUUIDBody(w http.ResponseWriter, r *http.Request) ([]uuid
 		UUIDs []string `json:"uuids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, i18n.SprintfFor(lang, "status.bad_request", err.Error()), http.StatusBadRequest)
 		return nil, false
 	}
-	ids, err := parseUUIDList(req.UUIDs)
+	ids, err := parseUUIDListFor(lang, req.UUIDs)
 	if err != nil {
-		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, i18n.SprintfFor(lang, "status.bad_request", err.Error()), http.StatusBadRequest)
 		return nil, false
 	}
 	return ids, true
@@ -146,28 +160,73 @@ func (p *Provider) writeUsers(w http.ResponseWriter) {
 }
 
 func parseUUIDList(ss []string) ([]uuid.UUID, error) {
+	return parseUUIDListFor(i18n.Get(), ss)
+}
+
+// parseUUIDListFor 按指定语言返回非法 UUID 报错.
+func parseUUIDListFor(lang string, ss []string) ([]uuid.UUID, error) {
 	out := make([]uuid.UUID, 0, len(ss))
 	for _, s := range ss {
 		id, err := uuid.Parse(strings.TrimSpace(s))
 		if err != nil {
-			return nil, fmt.Errorf("invalid UUID %q", s)
+			return nil, fmt.Errorf("%s", i18n.SprintfFor(lang, "status.invalid_uuid", s))
 		}
 		out = append(out, id)
 	}
 	return out, nil
 }
 
-// checkConfigKey 校验通信密钥 (env: CONFIG_KEY).
-// 未设置或对不上都返回 false.
+// 注册下发的用户 token（所属用户的个人凭证）：内存保存，重启清空，
+// 下次注册成功时整体替换. /config 鉴权接受 CONFIG_KEY 或其中任一 token.
+type userTokenStore struct {
+	sync.RWMutex
+	m map[string]struct{}
+}
+
+var userTokens = &userTokenStore{m: make(map[string]struct{})}
+
+// SetUserTokens 全量替换已注册的用户 token（注册成功后由注册流程调用）.
+func SetUserTokens(tokens []string) {
+	next := make(map[string]struct{}, len(tokens))
+	for _, t := range tokens {
+		if t != "" {
+			next[t] = struct{}{}
+		}
+	}
+	userTokens.Lock()
+	userTokens.m = next
+	userTokens.Unlock()
+}
+
+// checkConfigKey 校验通信密钥 (env: CONFIG_KEY) 或已注册的用户 token.
+// CONFIG_KEY 未设置时跳过主密钥校验，只认用户 token；两者都对不上直接 404.
 func checkConfigKey(r *http.Request) bool {
-	expected := os.Getenv("CONFIG_KEY")
-	if expected == "" {
+	var key string
+	if key = r.URL.Query().Get("key"); key == "" {
+		key = r.Header.Get("X-Config-Key")
+	}
+	if key == "" {
 		return false
 	}
-	if key := r.URL.Query().Get("key"); key != "" {
-		return key == expected
+	if expected := os.Getenv("CONFIG_KEY"); expected != "" && key == expected {
+		return true
 	}
-	return r.Header.Get("X-Config-Key") == expected
+	return userTokens.Has(key)
+}
+
+// Has 上报的 key 是否为已注册的用户 token（定长比较）.
+func (u *userTokenStore) Has(key string) bool {
+	if key == "" {
+		return false
+	}
+	u.RLock()
+	defer u.RUnlock()
+	for t := range u.m {
+		if len(t) == len(key) && subtle.ConstantTimeCompare([]byte(t), []byte(key)) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // envHosts 从多个环境变量收集公网地址 (单个或逗号分隔多值),

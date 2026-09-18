@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	"github.com/atticus6/go-vless/internal/i18n"
 )
 
 // EnsureBBR 启动前检查 BBR, 非容器且未开启时尝试开启.
@@ -31,36 +33,36 @@ func EnsureBBR() {
 		return
 	}
 	if os.Geteuid() != 0 {
-		log.Printf("[WARN] BBR not enabled (current=%q), need root to enable, skip", cur)
+		log.Printf(i18n.T("bbr.no_root"), cur)
 		return
 	}
 	avail := readSysctlTrim("/proc/sys/net/ipv4/tcp_available_congestion_control")
 	if !strings.Contains(" "+avail+" ", " bbr ") {
 		// 内核有模块但没加载时尝试 modprobe
 		if out, err := exec.Command("modprobe", "tcp_bbr").CombinedOutput(); err != nil {
-			log.Printf("[WARN] BBR not available (available=%q), modprobe tcp_bbr failed: %v %s. Need kernel >= 4.9", avail, err, strings.TrimSpace(string(out)))
+			log.Printf(i18n.T("bbr.no_avail"), avail, err, strings.TrimSpace(string(out)))
 			return
 		}
 		avail = readSysctlTrim("/proc/sys/net/ipv4/tcp_available_congestion_control")
 		if !strings.Contains(" "+avail+" ", " bbr ") {
-			log.Printf("[WARN] BBR still unavailable after modprobe (available=%q)", avail)
+			log.Printf(i18n.T("bbr.still_absent"), avail)
 			return
 		}
 	}
 	// 先切 qdisc 再切拥塞算法, BBR 要求 fq
 	if out, err := exec.Command("sysctl", "-w", "net.core.default_qdisc=fq").CombinedOutput(); err != nil {
-		log.Printf("[WARN] Enable BBR failed at default_qdisc: %v %s", err, strings.TrimSpace(string(out)))
+		log.Printf(i18n.T("bbr.qdisc_fail"), err, strings.TrimSpace(string(out)))
 		return
 	}
 	if out, err := exec.Command("sysctl", "-w", "net.ipv4.tcp_congestion_control=bbr").CombinedOutput(); err != nil {
-		log.Printf("[WARN] Enable BBR failed at tcp_congestion_control: %v %s", err, strings.TrimSpace(string(out)))
+		log.Printf(i18n.T("bbr.cc_fail"), err, strings.TrimSpace(string(out)))
 		return
 	}
 	if cur2 := readSysctlTrim("/proc/sys/net/ipv4/tcp_congestion_control"); cur2 != "bbr" {
-		log.Printf("[WARN] BBR sysctl applied but still not active (current=%q)", cur2)
+		log.Printf(i18n.T("bbr.not_active"), cur2)
 		return
 	}
-	log.Printf("[INFO] BBR enabled (was %q)", cur)
+	log.Printf(i18n.T("bbr.enabled"), cur)
 	persistBBR()
 }
 
@@ -72,7 +74,7 @@ func persistBBR() {
 		return
 	}
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		log.Printf("[WARN] BBR active but persist failed (%s): %v", path, err)
+		log.Printf(i18n.T("bbr.persist_fail"), path, err)
 	}
 }
 

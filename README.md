@@ -55,8 +55,46 @@ sudo ./install.sh uninstall # 卸载
 | `TUNNEL_PROTO`  | `auto` | 连不上隧道再换 `quic` 或 `http2` 试试           |
 | `MAX_CONN`      | `4096` | 同时在线人数上限，人太多时拒绝新连接            |
 | `CONFIG_KEY`    | 空     | 管理后台密码；**不设则后台打不开（404）**       |
+| `REGISTER_URL` | 空 | dashboard 地址，填了才向 dashboard 注册上报 |
+| `REGISTER_NODE_ID` | 空 | dashboard 分配的节点 id |
 | `DOMAIN`        | 空     | 自绑的域名，显示在后台                          |
 | `VERCEL_URL` / `NF_HOSTS` / `RAILWAY_PUBLIC_DOMAIN` | 空 | 平台自带的地址，显示在后台 |
+| `GO_VLESS_LANG` | 空（跟随 `LANG`） | 提示信息语言：`zh` 中文 / `en` 英文（`--lang` flag 优先级更高） |
+
+### 语言
+
+日志、`--help`、HTTP 报错信息与 `install.sh` 交互文案均支持中英双语，
+默认英文（`LANG=C` / 为空时），`LANG` 以 `zh` 开头即中文：
+
+```bash
+LANG=zh_CN.UTF-8 go run . --port 8080   # 中文日志
+go run . --lang zh --port 8080          # 显式指定（优先级最高）
+GO_VLESS_LANG=en ./install.sh           # 安装脚本强制英文
+```
+
+HTTP 接口（`/config/users/add` 等）的报错按请求 `Accept-Language` 协商，
+JSON 字段名保持英文不变。
+
+### 本地联调：`go run .` 注册到 dashboard
+
+```bash
+# 三元组拆开传（id/key 从 dashboard 节点页「复制安装命令」里取）
+CONFIG_KEY=<config_key> \
+REGISTER_URL=http://localhost:5173 \
+REGISTER_NODE_ID=<节点id> \
+go run . --port 8080
+```
+
+或用 flag（`CONFIG_KEY` 仍走环境变量）：
+
+```bash
+CONFIG_KEY=<config_key> go run . \
+  --dashboard-url http://localhost:5173 \
+  --node-id <节点id> \
+  --port 8080
+```
+
+启动后向 dashboard 注册一次，成功即停，失败每 60 秒重试；三项缺任一则只启动代理，不注册。
 
 ## 管理后台
 

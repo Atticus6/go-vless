@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/atticus6/go-vless/internal/i18n"
 	"github.com/cloudflare/cloudflared/config"
 	"github.com/cloudflare/cloudflared/connection"
 	"github.com/cloudflare/cloudflared/edgediscovery"
@@ -48,7 +49,7 @@ func CreateCloudflareTunnel(ctx context.Context, port int, protocol string) (str
 			protocol = "auto"
 		}
 	default:
-		return "", fmt.Errorf("unsupported tunnel protocol %q: want auto|quic|http2", protocol)
+		return "", fmt.Errorf("%s", i18n.Sprintf("tunnel.bad_proto", protocol))
 	}
 	metrics.RegisterBuildInfo(BuildType, BuildTime, Version)
 
