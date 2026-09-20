@@ -239,10 +239,35 @@ func TestUserTokenAuth(t *testing.T) {
 	}
 }
 
+// PublicURLs: 环境地址优先, TLS 生效的 SSL 域名追加在末尾, 重复去重.
+func TestPublicURLs(t *testing.T) {
+	t.Setenv("DOMAIN", "example.com")
+	t.Setenv("VERCEL_URL", "")
+	t.Setenv("NF_HOSTS", "")
+	t.Setenv("RAILWAY_PUBLIC_DOMAIN", "")
+
+	p := &Provider{}
+	if got := p.PublicURLs(); len(got) != 1 || got[0] != "https://example.com" {
+		t.Fatalf("env only = %v", got)
+	}
+
+	p.SSLDomain = "ssl.example.com"
+	got := p.PublicURLs()
+	if len(got) != 2 || got[0] != "https://example.com" || got[1] != "https://ssl.example.com" {
+		t.Errorf("with ssl = %v, want env first then ssl", got)
+	}
+
+	// SSL 域名已在 DOMAIN 里时不重复.
+	t.Setenv("DOMAIN", "ssl.example.com")
+	got = p.PublicURLs()
+	if len(got) != 1 || got[0] != "https://ssl.example.com" {
+		t.Errorf("dedup = %v, want single entry", got)
+	}
+}
+
 // /config 的 register 段：未配置只给 enabled=false；
 // 启用后展示目标地址、最近成功/错误、对账数与下次同步倒计时，且不泄露密钥.
-func TestConfigHandlerRegisterSection(t *testing.T) {
-	t.Setenv("CONFIG_KEY", "s3cr3t")
+func TestConfigHandlerRegisterSection(t *testing.T) {	t.Setenv("CONFIG_KEY", "s3cr3t")
 	ResetRegisterSnapshot()
 	defer ResetRegisterSnapshot()
 	never := func() bool { return false }
@@ -308,5 +333,52 @@ func TestConfigHandlerRegisterSection(t *testing.T) {
 	}
 	if next, _ := reg["nextSyncInSec"].(float64); next <= 0 || next > 60 {
 		t.Errorf("nextSyncInSec = %v, want (0,60] after failure", reg["nextSyncInSec"])
+	}
+}
+
+// /config 的 tls 段：未启用只给 enabled=false；
+// 启用后展示证书域名与到期时间；无回调（等待首次握手）时 expiresAt 为 null.
+func TestConfigHandlerTLSSection(t *testing.T) {
+	t.Setenv("CONFIG_KEY", "s3cr3t")
+	never := func() bool { return false }
+	p := &Provider{StartedAt: time.Now(), IPv4Supported: never, IPv6Supported: never}
+	mux := testMux(p)
+	get := func() map[string]any {
+		req := httptest.NewRequest(http.MethodGet, "/config?key=s3cr3t", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200", rec.Code)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("bad json: %v", err)
+		}
+		tls, ok := body["tls"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing tls section: %v", body)
+		}
+		return tls
+	}
+
+	if tls := get(); tls["enabled"] != false {
+		t.Errorf("default tls = %v, want enabled=false", tls)
+	}
+
+	p.SSLDomain = "example.com"
+	if tls := get(); tls["enabled"] != true || tls["expiresAt"] != nil {
+		t.Errorf("no cert yet = %v, want enabled with null expiresAt", tls)
+	} else if tls["domain"] != "example.com" {
+		t.Errorf("domain = %v, want example.com", tls["domain"])
+	}
+
+	exp := time.Now().Add(90 * 24 * time.Hour)
+	p.TLSCertExpiry = func() (time.Time, bool) { return exp, true }
+	tls := get()
+	if s, _ := tls["expiresAt"].(string); s == "" {
+		t.Errorf("expiresAt = %v, want RFC3339 timestamp", tls["expiresAt"])
+	}
+	if days, _ := tls["daysLeft"].(float64); days < 89 || days > 90 {
+		t.Errorf("daysLeft = %v, want ~90", tls["daysLeft"])
 	}
 }

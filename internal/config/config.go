@@ -2,6 +2,7 @@ package config
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -21,6 +22,7 @@ const (
 // Config 服务配置: flag 优先, 其次环境变量, 最后默认值.
 // UUID 支持逗号分隔多用户; Vercel 环境下 EnableTunnel 默认关闭 (TUNNEL=1 可显式覆盖).
 // DashboardURL/NodeID 配对出现时启用反向注册 (上报 dashboard), 缺任一项则只启动代理服务.
+// SSLDomain 非空时在完整 Linux 环境自动申请 TLS 证书 (ACME HTTP-01, 需 80/443 可用).
 type Config struct {
 	Users        []uuid.UUID
 	Port         int
@@ -29,6 +31,7 @@ type Config struct {
 	MaxConns     int
 	DashboardURL string
 	NodeID       string
+	SSLDomain    string
 }
 
 // Parse 注册 flag 并解析 (含环境变量覆盖默认值), 失败直接 Fatal.
@@ -100,6 +103,8 @@ func Parse() *Config {
 	var nodeID string
 	flag.StringVar(&dashboardURL, "dashboard-url", os.Getenv("REGISTER_URL"), i18n.T("flag.dashboard_url"))
 	flag.StringVar(&nodeID, "node-id", os.Getenv("REGISTER_NODE_ID"), i18n.T("flag.node_id"))
+	var sslDomain string
+	flag.StringVar(&sslDomain, "ssl-domain", os.Getenv("SSL_DOMAIN"), i18n.T("flag.ssl_domain"))
 	flag.StringVar(&langFlag, "lang", "auto", i18n.T("flag.lang"))
 
 	flag.Parse()
@@ -115,6 +120,10 @@ func Parse() *Config {
 	if err != nil {
 		log.Fatalf(i18n.T("cfg.invalid_uuid"), err)
 	}
+	domain, err := parseDomain(sslDomain)
+	if err != nil {
+		log.Fatalf(i18n.T("cfg.invalid_domain"), sslDomain)
+	}
 	return &Config{
 		Users:        userIDs,
 		Port:         port,
@@ -123,7 +132,43 @@ func Parse() *Config {
 		MaxConns:     maxConns,
 		DashboardURL: dashboardURL,
 		NodeID:       nodeID,
+		SSLDomain:    domain,
 	}
+}
+
+// parseDomain 归一化证书域名: 去空格/小写/去尾点; 空串表示不启用 HTTPS.
+// 非法 (带 scheme、路径、端口、空白或非法字符) 返回 error.
+func parseDomain(s string) (string, error) {
+	d := strings.ToLower(strings.TrimSpace(s))
+	d = strings.TrimSuffix(d, ".")
+	if d == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(d, " \t\r\n/:") || strings.Contains(d, "://") {
+		return "", fmt.Errorf("bad domain %q", s)
+	}
+	labels := strings.Split(d, ".")
+	if len(labels) < 2 {
+		return "", fmt.Errorf("bad domain %q", s)
+	}
+	for _, lb := range labels {
+		if lb == "" || len(lb) > 63 {
+			return "", fmt.Errorf("bad domain %q", s)
+		}
+		for i := 0; i < len(lb); i++ {
+			c := lb[i]
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return "", fmt.Errorf("bad domain %q", s)
+			}
+		}
+		if lb[0] == '-' || lb[len(lb)-1] == '-' {
+			return "", fmt.Errorf("bad domain %q", s)
+		}
+	}
+	if len(d) > 253 {
+		return "", fmt.Errorf("bad domain %q", s)
+	}
+	return d, nil
 }
 
 // isValidLang 校验 --lang 取值: auto|zh|en (兼容 zh_CN.UTF-8 / en-US 等变体).

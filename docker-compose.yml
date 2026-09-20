@@ -18,6 +18,9 @@ services:
     ports:
       # 左侧宿主机端口可改 (HOST_PORT=9090 ... up -d), 右侧须与下面 PORT 一致
       - "${HOST_PORT:-8080}:8080"
+      # HTTPS 自动证书需要时解开 (域名解析到本机, 与 SSL_DOMAIN 配合):
+      # - "80:80"
+      # - "443:443"
     environment:
       # 必填: VLESS 用户 UUID, 多用户逗号分隔
       UUID: ${UUID:?请设置 UUID, 如 UUID=xxx docker compose up -d}
@@ -34,6 +37,11 @@ services:
       # 公网地址 (管理页 urls 展示, 均支持逗号分隔多值):
       # 自绑域名 / Vercel 部署域名(自动注入, 手动部署可填) / 额外主机 / Railway 域名(自动注入)
       DOMAIN: ${DOMAIN:-}
+      # 自动 HTTPS (ACME 申请证书): 域名须解析到本机且上面 80/443 已映射;
+      # 证书存容器内 cert-cache, 重建会重新申请 (注意频率限制, 正式用建议加 volume 持久化)
+      SSL_DOMAIN: ${SSL_DOMAIN:-}
+      # SSL_CACHE_DIR: ${SSL_CACHE_DIR:-}   # 证书缓存目录, 默认 ./cert-cache (容器内 /app/cert-cache)
+      # SSL_EMAIL: ${SSL_EMAIL:-}           # 联系邮箱 (可空, 仅过期提醒)
       VERCEL_URL: ${VERCEL_URL:-}
       NF_HOSTS: ${NF_HOSTS:-}
       RAILWAY_PUBLIC_DOMAIN: ${RAILWAY_PUBLIC_DOMAIN:-}

@@ -58,8 +58,23 @@ sudo ./install.sh uninstall # 卸载
 | `REGISTER_URL` | 空 | dashboard 地址，填了才向 dashboard 注册上报 |
 | `REGISTER_NODE_ID` | 空 | dashboard 分配的节点 id |
 | `DOMAIN`        | 空     | 自绑的域名，显示在后台                          |
+| `SSL_DOMAIN`    | 空     | 填域名自动申请 TLS 证书走 HTTPS（完整 Linux + 80/443 可用才生效，见下） |
+| `SSL_CACHE_DIR` | `./cert-cache` | 证书缓存目录（自动续期靠它，重建容器前请持久化） |
+| `SSL_EMAIL`     | 空     | 联系邮箱，可空，仅证书过期提醒                  |
 | `VERCEL_URL` / `NF_HOSTS` / `RAILWAY_PUBLIC_DOMAIN` | 空 | 平台自带的地址，显示在后台 |
 | `GO_VLESS_LANG` | 空（跟随 `LANG`） | 提示信息语言：`zh` 中文 / `en` 英文（`--lang` flag 优先级更高） |
+
+### HTTPS 自动证书
+
+完整 Linux 服务器上，把域名解析到本机、放行 80/443，然后：
+
+```bash
+SSL_DOMAIN=example.com ./go-vless
+# 或 SSL_DOMAIN=example.com sudo ./install.sh
+# Docker: 解开 docker-compose.yml 里 80/443 映射, SSL_DOMAIN=example.com docker compose up -d
+```
+
+首次有客户端连 443 时按需申请证书（ACME HTTP-01，走 80 端口挑战），证书落盘后自动续期；80 端口只处理挑战，其余请求 301 到 HTTPS。生效后 `/config` 的 `urls` 与注册上报会自动带上 `https://域名`，`tls` 段可查看证书域名、到期时间与剩余天数。原 `PORT` 明文口保留（隧道回源与存量配置不受影响），443/80 被占用、目录不可写或 Serverless 环境会自动回退普通 HTTP（看启动日志确认）。`notunnel` 瘦身构建（如 Vercel）不含 HTTPS，直接走 HTTP。也可用 flag：`--ssl-domain example.com`。
 
 ### 语言
 

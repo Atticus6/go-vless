@@ -92,11 +92,51 @@ func Run(cfg *config.Config) {
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 	}
+	mux := srv.Handler
+
+	// 自动 HTTPS: 完整 Linux + 配域名 + 443/80 可用才启用, 否则回退 plain HTTP.
+	// 证书首次握手时按需申请 (HTTP-01, 需域名解析到本机且 80 公网可达), 落盘自动续期.
+	if domain := tlsDomain(cfg); domain != "" {
+		if tlsSrv, httpSrv, certExpiryFn, ok := tryAutoTLS(mux, cfg); ok {
+			// TLS 已生效：SSL 域名与证书到期查询进入对外状态（/config urls/tls 段同源）.
+			st.SSLDomain = domain
+			st.TLSCertExpiry = certExpiryFn
+			// PORT 保留明文监听 (隧道回源与存量端口配置不受影响),
+			// 443 对外 HTTPS, 80 只做 ACME 挑战.
+			servers := []*http.Server{tlsSrv, httpSrv}
+			if keepPlainPort(cfg.Port) {
+				go func() {
+					if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+						log.Printf(i18n.T("server.error"), err)
+					}
+				}()
+				servers = append(servers, srv)
+				log.Printf(i18n.T("server.listening"), cfg.Port)
+			}
+			go gracefulShutdown(tun, cancel, servers...)
+			log.Printf(i18n.T("server.tls_on"), domain, certCacheDir())
+			afterStart(ctx, cfg, tun, users, st)
+			if err := tlsSrv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
+				log.Fatalf(i18n.T("server.error"), err)
+			}
+			log.Println(i18n.T("server.stopped"))
+			return
+		}
+	}
 
 	// 优雅关闭
-	go gracefulShutdown(srv, tun, cancel)
+	go gracefulShutdown(tun, cancel, srv)
 
 	log.Printf(i18n.T("server.listening"), cfg.Port)
+	afterStart(ctx, cfg, tun, users, st)
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		log.Fatalf(i18n.T("server.error"), err)
+	}
+	log.Println(i18n.T("server.stopped"))
+}
+
+// afterStart 启动后公共收尾: 管理后台提示、反向注册与隧道等待日志.
+func afterStart(ctx context.Context, cfg *config.Config, tun *tunnel.Tunnel, users *user.Registry, st *status.Provider) {
 	if os.Getenv("CONFIG_KEY") == "" {
 		log.Println(i18n.T("server.configkey_off"))
 	}
@@ -104,7 +144,7 @@ func Run(cfg *config.Config) {
 	// 反向注册: 带三元组安装时上报 dashboard, 否则仅本地运行.
 	// 成功后服务端下发的节点用户 token 按 UUID 同步到 users，即刻生效.
 	register.MaybeStart(ctx, cfg.DashboardURL, cfg.NodeID, register.BackendInfo{
-		URLs: status.AccessURLs(),
+		URLs: st.PublicURLs(),
 		TunnelURL: func() string {
 			if tun == nil {
 				return ""
@@ -117,13 +157,10 @@ func Run(cfg *config.Config) {
 	if cfg.EnableTunnel {
 		log.Println(i18n.T("server.tunnel_waiting"))
 	}
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf(i18n.T("server.error"), err)
-	}
-	log.Println(i18n.T("server.stopped"))
 }
 
-func gracefulShutdown(srv *http.Server, tun *tunnel.Tunnel, cancel context.CancelFunc) {
+// gracefulShutdown 收信号后优雅关闭: 先停隧道, 再依次关闭所有 HTTP 服务.
+func gracefulShutdown(tun *tunnel.Tunnel, cancel context.CancelFunc, srvs ...*http.Server) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
@@ -138,7 +175,12 @@ func gracefulShutdown(srv *http.Server, tun *tunnel.Tunnel, cancel context.Cance
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf(i18n.T("server.shutdown_err"), err)
+	for _, srv := range srvs {
+		if srv == nil {
+			continue
+		}
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf(i18n.T("server.shutdown_err"), err)
+		}
 	}
 }

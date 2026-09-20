@@ -58,8 +58,23 @@ Everything lives in env vars; restart after changing (recreate Docker, restart t
 | `REGISTER_URL` | empty | Dashboard address; registers only when set |
 | `REGISTER_NODE_ID` | empty | Node id assigned by the dashboard |
 | `DOMAIN`        | empty   | Your own domain, shown on the admin page                |
+| `SSL_DOMAIN`    | empty   | Set a domain to auto-issue TLS certificates for HTTPS (full Linux + ports 80/443 required, see below) |
+| `SSL_CACHE_DIR` | `./cert-cache` | Certificate cache dir (renewal relies on it; persist it before recreating containers) |
+| `SSL_EMAIL`     | empty   | Contact email, optional, only for expiry notices        |
 | `VERCEL_URL` / `NF_HOSTS` / `RAILWAY_PUBLIC_DOMAIN` | empty | Platform-provided addresses, shown on the admin page |
 | `GO_VLESS_LANG` | empty (follows `LANG`) | Message language: `zh` Chinese / `en` English (`--lang` flag wins) |
+
+### Automatic HTTPS certificates
+
+On a full Linux server, point the domain at the machine, open ports 80/443, then:
+
+```bash
+SSL_DOMAIN=example.com ./go-vless
+# or SSL_DOMAIN=example.com sudo ./install.sh
+# Docker: uncomment the 80/443 mappings in docker-compose.yml, then SSL_DOMAIN=example.com docker compose up -d
+```
+
+The certificate is issued on demand at the first handshake on 443 (ACME HTTP-01 via port 80) and renewed automatically from disk; port 80 only serves challenges, everything else 301s to HTTPS. Once active, `/config` urls and register reports automatically include `https://domain`, and the `tls` section shows the certificate domain, expiry and days left. The plain `PORT` listener stays (tunnel origin and existing setups keep working). If 443/80 are taken, the cache dir isn't writable, or you're on serverless, it falls back to plain HTTP (check the startup logs). Slim `notunnel` builds (e.g. Vercel) exclude HTTPS entirely and always use HTTP. Flag form: `--ssl-domain example.com`.
 
 ### Language
 

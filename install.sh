@@ -11,7 +11,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash -s -- --register "<服务端地址>:<节点id>:<config_key>"
 # 本地:
 #   sudo ./install.sh [--register <三元组>] [install|update|uninstall] [version]
-# 环境变量可覆盖默认值: UUID PORT TUNNEL TUNNEL_PROTO MAX_CONN CONFIG_KEY DOMAIN RUNTIME REGISTER
+# 环境变量可覆盖默认值: UUID PORT TUNNEL TUNNEL_PROTO MAX_CONN CONFIG_KEY DOMAIN SSL_DOMAIN RUNTIME REGISTER
 # 其中 REGISTER 与 --register 等价 (flag 优先), 内容为 服务端地址:节点id:config_key;
 # 不填则只启动代理服务, 不向 dashboard 注册上报.
 # 其中 TUNNEL 不设时安装会交互询问 (默认开启); RUNTIME=binary|docker 指定运行模式,
@@ -78,6 +78,8 @@ T() {
     info_key) zh="CONFIG_KEY: %s"; en="CONFIG_KEY:   %s" ;;
     info_dash) zh="Dashboard:  %s"; en="Dashboard:    %s" ;;
     info_node) zh="节点 ID:    %s"; en="Node ID:      %s" ;;
+    info_ssl) zh="HTTPS 证书: %s"; en="HTTPS cert:  %s" ;;
+    ssl_off) zh="未启用 (仅 HTTP)"; en="disabled (HTTP only)" ;;
     info_admin) zh="管理页:     http://<服务器IP>:%s/config?key=%s"; en="Admin page:  http://<server-IP>:%s/config?key=%s" ;;
     info_ctl) zh="启停:       %s"; en="Control:     %s" ;;
     info_logs) zh="日志:       %s"; en="Logs:        %s" ;;
@@ -306,10 +308,12 @@ ask_runtime() {
 }
 
 # 写 compose 文件 (端口与容器内监听端口取 env 文件同一值, 双端 baked 一致)
+# SSL_DOMAIN 非空时追加 80/443 映射 (ACME 挑战与 HTTPS) 与证书持久化卷.
 write_compose() {
   local imgtag="${1#v}" port="$2"
   mkdir -p "$COMPOSE_DIR"
-  cat >"$COMPOSE_DIR/docker-compose.yml" <<EOF
+  {
+    cat <<EOF
 # go-vless Docker Compose (install.sh 生成)
 # 改端口: 同改本文件 ports 映射与 $ENV_FILE 里 PORT (容器内监听端口), 然后 up -d
 services:
@@ -319,9 +323,26 @@ services:
     restart: unless-stopped
     ports:
       - "$port:$port"
+EOF
+    if [ -n "${SSL_DOMAIN:-}" ]; then
+      cat <<EOF
+      - "80:80"
+      - "443:443"
+EOF
+    fi
+    cat <<EOF
     env_file:
       - $ENV_FILE
 EOF
+    if [ -n "${SSL_DOMAIN:-}" ]; then
+      cat <<EOF
+    volumes:
+      - go-vless-certs:/app/cert-cache
+volumes:
+  go-vless-certs:
+EOF
+    fi
+  } >"$COMPOSE_DIR/docker-compose.yml"
   T compose_written "$COMPOSE_DIR/docker-compose.yml" "$IMAGE:$imgtag"
   echo
 }
@@ -390,6 +411,7 @@ TUNNEL_PROTO=${TUNNEL_PROTO:-auto}
 MAX_CONN=${MAX_CONN:-4096}
 CONFIG_KEY=${CONFIG_KEY:-$(rand_hex)}
 DOMAIN=${DOMAIN:-}
+SSL_DOMAIN=${SSL_DOMAIN:-}
 REGISTER_URL=${REGISTER_URL:-}
 REGISTER_NODE_ID=${REGISTER_NODE_ID:-}
 EOF
@@ -399,13 +421,21 @@ EOF
 }
 
 # 已有配置文件 + 显式三元组: 覆盖写入配对三行, 其余保留.
-upsert_env() {
-  local k="$1" v="$2" f="$3" esc
+upsert_env() {  local k="$1" v="$2" f="$3" esc
   esc="$(printf "%s" "$v" | sed 's/[&\\]/\\&/g')"
   if grep -q "^${k}=" "$f" 2>/dev/null; then
     sed -i "s|^${k}=.*|${k}=${esc}|" "$f"
   else
     printf "%s=%s\n" "$k" "$v" >>"$f"
+  fi
+}
+
+# 老配置迁移: 只补缺失的键 (已有值永不覆盖).
+# 新版本加 env 时在这里加一行, 否则 update/重装的老用户永远用不上.
+migrate_env() {
+  [ -f "$ENV_FILE" ] || return 0
+  if ! grep -q "^SSL_DOMAIN=" "$ENV_FILE" 2>/dev/null; then
+    printf "SSL_DOMAIN=%s\n" "${SSL_DOMAIN:-}" >>"$ENV_FILE"
   fi
 }
 
@@ -469,6 +499,12 @@ show_info() {
   echo
   T info_node "${REGISTER_NODE_ID:-}"
   echo
+  if [ -n "${SSL_DOMAIN:-}" ]; then
+    T info_ssl "$SSL_DOMAIN"
+  else
+    T info_ssl "$(T ssl_off)"
+  fi
+  echo
   T info_admin "${PORT:-8080}" "${CONFIG_KEY:-}"
   echo
   if [ "$mode" = "docker" ]; then
@@ -495,6 +531,7 @@ do_install() {
   T running_mode "$mode"
   echo
   write_env
+  migrate_env
   apply_register
   if [ "$mode" = "docker" ]; then
     # 切到 docker: 停掉二进制服务 (如有)
@@ -521,6 +558,7 @@ do_install() {
 
 do_update() {
   need_root
+  migrate_env
   apply_register
   local ver="$VERSION"
   if [ "$ver" = "latest" ]; then

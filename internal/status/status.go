@@ -27,8 +27,12 @@ import (
 var buildTime = "unknown"
 
 // Provider 状态页依赖. Users 用于路径鉴权 + 取请求者流量.
+// SSLDomain 由 server 在 TLS 成功启用后赋值 (未生效保持空),
+// TLSCertExpiry 为证书到期查询（只读缓存，不触发申请），同上.
 type Provider struct {
 	Users         *user.Registry
+	SSLDomain     string
+	TLSCertExpiry func() (time.Time, bool)
 	TunnelEnabled bool
 	TunnelURL     func() string
 	IPv4Supported func() bool
@@ -39,9 +43,25 @@ type Provider struct {
 	egressV6 atomic.Value // egressCache, 出口 IPv6 (按需刷新)
 }
 
-// AccessURLs 对外访问地址（与 /config 的 urls 同源），反向注册上报用.
-func AccessURLs() []string {
-	return envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS", "RAILWAY_PUBLIC_DOMAIN")
+// PublicURLs 对外访问地址（/config 的 urls 与反向注册上报同源）:
+// 环境变量地址优先（DOMAIN、VERCEL_URL、NF_HOSTS、RAILWAY_PUBLIC_DOMAIN，
+// 均支持逗号分隔多值），其后追加 TLS 生效的 SSL 域名（https，无端口），重复去重.
+func (p *Provider) PublicURLs() []string {
+	urls := envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS", "RAILWAY_PUBLIC_DOMAIN")
+	if p != nil && p.SSLDomain != "" {
+		u := "https://" + p.SSLDomain
+		dup := false
+		for _, v := range urls {
+			if v == u {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			urls = append(urls, u)
+		}
+	}
+	return urls
 }
 
 // BuildVersion 构建版本（反向注册上报用），与状态页 buildTime 同源.
@@ -59,13 +79,14 @@ func (p *Provider) Handler(w http.ResponseWriter, r *http.Request) {
 	if p.TunnelEnabled && p.TunnelURL != nil {
 		tunnelURL = p.TunnelURL()
 	}
-	// urls 只收环境变量的地址, 隧道地址走专属 tunnelURL 字段.
+	// urls 只收环境变量的地址 + 生效的 SSL 域名, 隧道地址走专属 tunnelURL 字段.
 	// 地址来源 (按优先级排序, 均支持逗号分隔多值):
 	//   DOMAIN: 自绑定的自定义域名
 	//   VERCEL_URL: Vercel 自动注入的部署域名
 	//   NF_HOSTS: 额外主机列表 (逗号分隔)
 	//   RAILWAY_PUBLIC_DOMAIN: Railway 自动注入的公网域名
-	urls = append(urls, envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS", "RAILWAY_PUBLIC_DOMAIN")...)
+	//   SSLDomain: TLS 生效时的证书域名 (https 443, 自动追加)
+	urls = append(urls, p.PublicURLs()...)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -78,6 +99,7 @@ func (p *Provider) Handler(w http.ResponseWriter, r *http.Request) {
 		"egressIPv6": p.egressIP(true),
 		"users":      formatTraffic(p.userTraffic()),
 		"register":   registerView(),
+		"tls":        p.tlsView(),
 		"buildTime":  getBuildTime(),
 		"binarySize": getBinarySize(),
 		"memory":     getMemUsage(),
@@ -251,6 +273,29 @@ func ResetRegisterSnapshot() {
 	registerState.Lock()
 	registerState.snap = RegisterSnapshot{}
 	registerState.Unlock()
+}
+
+// tlsView /config 的 tls 段：HTTPS 是否启用、证书域名与到期时间.
+// 未启用只给 enabled=false；已启用但缓存尚无证书（等待首次握手），
+// expiresAt 为 null；daysLeft 为整天数（已过期为负数）.
+func (p *Provider) tlsView() map[string]any {
+	enabled := p != nil && p.SSLDomain != ""
+	view := map[string]any{"enabled": enabled}
+	if !enabled {
+		return view
+	}
+	view["domain"] = p.SSLDomain
+	exp, ok := time.Time{}, false
+	if p.TLSCertExpiry != nil {
+		exp, ok = p.TLSCertExpiry()
+	}
+	if !ok {
+		view["expiresAt"] = nil
+		return view
+	}
+	view["expiresAt"] = exp.UTC().Format(time.RFC3339)
+	view["daysLeft"] = int(time.Until(exp).Hours() / 24)
+	return view
 }
 
 // registerView /config 的 register 段视图：时间转 RFC3339（从未成功/无错误给 null），
