@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -69,8 +70,7 @@ func Run(cfg *config.Config) {
 	}
 
 	v := vless.New(users, cfg.MaxConns)
-	st := &status.Provider{
-		Users:         users,
+	st := &status.Provider{		Users:         users,
 		TunnelEnabled: cfg.EnableTunnel,
 		TunnelURL: func() string {
 			if tun == nil {
@@ -82,6 +82,9 @@ func Run(cfg *config.Config) {
 		IPv6Supported: v.HasIPv6,
 		StartedAt:     time.Now(),
 	}
+
+	// 启动摘要: 关键配置一次打全 (密钥只显示是否设置, 不打值).
+	logSummary(cfg, v)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
@@ -135,10 +138,42 @@ func Run(cfg *config.Config) {
 	log.Println(i18n.T("server.stopped"))
 }
 
+// logSummary 启动摘要: 构建版本、端口/连接数/隧道/证书域名、注册目标、
+// 出口网络与管理后台状态. 排查先看这几行.
+func logSummary(cfg *config.Config, v *vless.Server) {
+	log.Printf(i18n.T("server.build_info"), status.BuildVersion(), runtime.GOOS, runtime.GOARCH)
+	tunnel := i18n.T("server.tunnel_off")
+	if cfg.EnableTunnel {
+		tunnel = cfg.TunnelProto
+	}
+	domain := cfg.SSLDomain
+	if domain == "" {
+		domain = i18n.T("server.none")
+	}
+	log.Printf(i18n.T("server.cfg_info"), cfg.Port, cfg.MaxConns, tunnel, domain)
+	if cfg.DashboardURL != "" {
+		node := cfg.NodeID
+		if node == "" {
+			node = i18n.T("server.none")
+		}
+		log.Printf(i18n.T("server.register_info"), cfg.DashboardURL, node)
+	}
+	v4, v6 := i18n.T("probe.unavailable"), i18n.T("probe.unavailable")
+	if v.HasIPv4() {
+		v4 = i18n.T("probe.ok")
+	}
+	if v.HasIPv6() {
+		v6 = i18n.T("probe.ok")
+	}
+	log.Printf(i18n.T("server.net_info"), v4, v6)
+}
+
 // afterStart 启动后公共收尾: 管理后台提示、反向注册与隧道等待日志.
 func afterStart(ctx context.Context, cfg *config.Config, tun *tunnel.Tunnel, users *user.Registry, st *status.Provider) {
 	if os.Getenv("CONFIG_KEY") == "" {
 		log.Println(i18n.T("server.configkey_off"))
+	} else {
+		log.Println(i18n.T("server.configkey_on"))
 	}
 
 	// 反向注册: 带三元组安装时上报 dashboard, 否则仅本地运行.
