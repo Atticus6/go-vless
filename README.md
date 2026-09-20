@@ -36,11 +36,18 @@ UUID=<你的uuid> CONFIG_KEY=<管理密钥> docker compose up -d
 curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash
 ```
 
-按提示选直装（默认）还是 Docker、开不开隧道。之后：
+按提示选直装（默认）还是 Docker、开不开隧道。注意管道模式传动作要加 `-s --`（否则 `bash` 会把动作当文件名）：
 
 ```bash
-sudo ./install.sh update    # 升级到最新版
-sudo ./install.sh uninstall # 卸载
+curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash -s -- update    # 升级到最新版
+curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash -s -- uninstall # 卸载
+```
+
+装完脚本会存一份到 `/usr/local/bin/go-vless-install.sh`，之后直接用它就行，不用重下：
+
+```bash
+sudo go-vless-install.sh update    # 升级到最新版
+sudo go-vless-install.sh uninstall # 卸载
 ```
 
 ## 配置

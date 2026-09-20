@@ -36,11 +36,18 @@ Pin a version with `IMAGE_TAG=0.1`, change the port with `HOST_PORT=9090`, view 
 curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash
 ```
 
-It asks direct install (default) vs Docker and whether to enable the tunnel. Afterwards:
+It asks direct install (default) vs Docker and whether to enable the tunnel. Note: in pipe mode, actions need `-s --` (otherwise `bash` treats the action as a file name):
 
 ```bash
-sudo ./install.sh update    # upgrade to latest
-sudo ./install.sh uninstall # uninstall
+curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash -s -- update    # upgrade to latest
+curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash -s -- uninstall # uninstall
+```
+
+The installer saves itself to `/usr/local/bin/go-vless-install.sh`, so later just use it without re-downloading:
+
+```bash
+sudo go-vless-install.sh update    # upgrade to latest
+sudo go-vless-install.sh uninstall # uninstall
 ```
 
 ## Configuration

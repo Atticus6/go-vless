@@ -77,7 +77,7 @@ T() {
     env_missing) zh="配置不存在 (%s), 先执行安装"; en="config not found (%s), install first" ;;
     env_lost) zh="配置丢失 (%s), 先执行安装"; en="config lost (%s), install first" ;;
     not_installed) zh="尚未安装, 先执行安装"; en="not installed yet, install first" ;;
-    uninstalled) zh="已卸载 (配置保留在 %s, 不要了可手动删除)"; en="uninstalled (config kept at %s, delete manually if unneeded)" ;;
+    uninstalled) zh="已卸载 (二进制/unit/容器/配置已删除，配置曾在 %s)"; en="uninstalled (binary/unit/container/config removed, config was %s)" ;;
     usage) zh="用法: %s [--register <服务端地址:节点id:config_key>] [install|update|uninstall] [version]"; en="usage: %s [--register <server-url:node-id:config_key>] [install|update|uninstall] [version]" ;;
     mode) zh="运行模式:   %s"; en="Runtime:     %s" ;;
     dash_none) zh="未配置 (仅本地运行，不向 dashboard 注册)"; en="not set (local only, no dashboard registration)" ;;
@@ -741,7 +741,7 @@ do_uninstall() {
   systemctl disable --now go-vless 2>/dev/null || true
   compose_down
   rm -rf "$COMPOSE_DIR"
-  rm -f "$UNIT" "$BIN"
+  rm -f "$UNIT" "$BIN" "$ENV_FILE"
   systemctl daemon-reload
   T uninstalled "$ENV_FILE"
   echo
