@@ -18,6 +18,8 @@
 # 其中 TUNNEL 不设时安装会交互询问 (默认开启, 重装默认保持现有值);
 # RUNTIME=binary|docker 指定运行模式 (重装同样默认保持现有模式),
 # 不设且本机有 Docker 时交互询问 (默认二进制), 无 Docker 直接二进制.
+# 管道 + sudo 下环境变量会被剥离, 非交互指定用 flag (与 --register 同理):
+#   curl -fsSL .../install.sh | sudo bash -s -- --tunnel 0 --runtime docker
 # Docker 模式镜像: ghcr.io/atticus6/go-vless:<版本去v>, 随 release 版本走 (update 可升级).
 set -euo pipefail
 
@@ -55,6 +57,8 @@ T() {
   local zh="" en=""
   case "$key" in
     reg_missing_arg) zh="--register 缺少参数 (格式 服务端地址:节点id:config_key)"; en="--register requires an argument (format server-url:node-id:config_key)" ;;
+    opt_missing_arg) zh="缺少参数值: %s"; en="missing value for: %s" ;;
+    tunnel_invalid) zh="隧道开关非法: %s, 只能是 0/1"; en="invalid tunnel flag: %s, want 0/1" ;;
     reg_bad_format) zh="REGISTER 格式错误，应为 服务端地址:节点id:config_key"; en="bad REGISTER format, want server-url:node-id:config_key" ;;
     need_root) zh="请用 root 运行 (sudo bash)"; en="please run as root (sudo bash)" ;;
     missing_dep) zh="缺少依赖: %s"; en="missing dependency: %s" ;;
@@ -77,7 +81,7 @@ T() {
     env_lost) zh="配置丢失 (%s), 先执行安装"; en="config lost (%s), install first" ;;
     not_installed) zh="尚未安装, 先执行安装"; en="not installed yet, install first" ;;
     uninstalled) zh="已卸载 (二进制/unit/容器/配置已删除，配置曾在 %s)"; en="uninstalled (binary/unit/container/config removed, config was %s)" ;;
-    usage) zh="用法: %s [--register <服务端地址:节点id:config_key>] [install|update|uninstall] [version]"; en="usage: %s [--register <server-url:node-id:config_key>] [install|update|uninstall] [version]" ;;
+    usage) zh="用法: %s [--register <服务端地址:节点id:config_key>] [--tunnel 0|1] [--runtime binary|docker] [install|update|uninstall] [version]"; en="usage: %s [--register <server-url:node-id:config_key>] [--tunnel 0|1] [--runtime binary|docker] [install|update|uninstall] [version]" ;;
     mode) zh="运行模式:   %s"; en="Runtime:     %s" ;;
     dash_none) zh="未配置 (仅本地运行，不向 dashboard 注册)"; en="not set (local only, no dashboard registration)" ;;
     info_uuid) zh="UUID:       %s"; en="UUID:         %s" ;;
@@ -91,6 +95,7 @@ T() {
     installer_saved) zh="安装脚本已保存至 %s，后续 update/uninstall 可直接用它"; en="installer saved to %s, use it for future update/uninstall" ;;
     installer_save_fail) zh="安装脚本存档失败 (%s)，不影响本次安装"; en="failed to archive installer (%s), continuing anyway" ;;
     confirm_reinstall) zh="检测到已安装 (%s)，覆盖重装？[Y/n] "; en="already installed (%s), overwrite? [Y/n] " ;;
+    stopping) zh="正在停止已有的 go-vless 服务…"; en="stopping existing go-vless services…" ;;
     reinstall_abort) zh="已取消（用 update 升级，或 uninstall 后重装）"; en="aborted (use update to upgrade, or uninstall first)" ;;
     auto_proceed) zh="非交互环境，%s 已存在，自动继续"; en="non-interactive, %s exists, continuing automatically" ;;
     info_ssl) zh="HTTPS 证书: %s"; en="HTTPS cert:  %s" ;;
@@ -110,8 +115,8 @@ T() {
   fi
 }
 
-# 命令行参数预处理: 摘出 --register (管道安装 sudo bash -s -- 透参就靠它,
-# 纯 env 变量过不了 sudo), 剩下的 positional 原样放回 $1/$2.
+# 命令行参数预处理: 摘出 --register/--tunnel/--runtime (管道安装 sudo bash -s --
+# 透参就靠它, 纯 env 变量过不了 sudo), 剩下的 positional 原样放回 $1/$2.
 REGISTER="${REGISTER:-}"
 _ARGS=()
 while [ $# -gt 0 ]; do
@@ -127,6 +132,32 @@ while [ $# -gt 0 ]; do
       ;;
     --register=*)
       REGISTER="${1#--register=}"
+      shift
+      ;;
+    --tunnel)
+      [ $# -ge 2 ] || {
+        T opt_missing_arg "--tunnel" >&2
+        echo >&2
+        exit 1
+      }
+      TUNNEL="$(normalize_tunnel "$2")" || exit 1
+      shift 2
+      ;;
+    --tunnel=*)
+      TUNNEL="$(normalize_tunnel "${1#--tunnel=}")" || exit 1
+      shift
+      ;;
+    --runtime)
+      [ $# -ge 2 ] || {
+        T opt_missing_arg "--runtime" >&2
+        echo >&2
+        exit 1
+      }
+      RUNTIME="$2"
+      shift 2
+      ;;
+    --runtime=*)
+      RUNTIME="${1#--runtime=}"
       shift
       ;;
     --)
@@ -151,6 +182,19 @@ fi
 unset _ARGS
 ACTION="${1:-install}"
 VERSION="${2:-${VERSION:-latest}}"
+
+# --tunnel 取值归一化为 0/1 (大小写/别名兼容), 非法直接报错退出.
+normalize_tunnel() {
+  case "$(printf "%s" "$1" | tr '[:upper:]' '[:lower:]')" in
+    1 | y | yes | true | on) printf "1" ;;
+    0 | n | no | false | off) printf "0" ;;
+    *)
+      T tunnel_invalid "$1" >&2
+      echo >&2
+      exit 1
+      ;;
+  esac
+}
 
 # REGISTER 三元组 服务端地址:节点id:config_key (服务端地址自带冒号, 从右拆;
 # 节点 id 为 UUID、key 为 hex, 均不含冒号). 拆出的 key 直接作为 CONFIG_KEY.
@@ -296,6 +340,30 @@ docker_available() {
   [ -n "$(compose_bin)" ] || return 1
 }
 
+# 统一交互读一行: $1=提示词 key, 余下是它的参数.
+# 答案走 stdout (调用方 $() 捕获安全), 提示词走 stderr 或 /dev/tty;
+# stdin TTY 优先, 管道安装且 stderr 是终端时走 /dev/tty;
+# 返回非零表示没有任何终端 (调用方取默认值).
+# 注意: 绝不能在这里判 [ -t 1 ], 调用方多在 $() 里, 那里 stdout 永远不是终端.
+ask_line() {
+  local key="$1"
+  shift
+  local ans=""
+  if [ -t 0 ]; then
+    T "$key" "$@" >&2
+    read -r ans 2>/dev/null || ans=""
+    printf "%s" "$ans"
+    return 0
+  fi
+  if [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    T "$key" "$@" >/dev/tty 2>/dev/null || true
+    read -r ans </dev/tty 2>/dev/null || ans=""
+    printf "%s" "$ans"
+    return 0
+  fi
+  return 1
+}
+
 # 当前运行模式 (重装时作默认值): compose 文件在即 docker,
 # 否则有二进制/service 痕迹即 binary, 全无即全新安装 ("").
 current_mode() {
@@ -339,12 +407,10 @@ ask_runtime() {
     return
   fi
   local ans=""
-  if [ -t 0 ]; then
-    if [ -n "$cur" ]; then T ask_runtime_cur "$cur"; else T ask_runtime; fi
-    read -r ans 2>/dev/null || ans=""
-  elif [ -t 1 ] && [ -e /dev/tty ]; then
-    if [ -n "$cur" ]; then T ask_runtime_cur "$cur" >/dev/tty || true; else T ask_runtime >/dev/tty || true; fi
-    read -r ans </dev/tty 2>/dev/null || ans=""
+  if [ -n "$cur" ]; then
+    ans="$(ask_line ask_runtime_cur "$cur" || true)"
+  else
+    ans="$(ask_line ask_runtime || true)"
   fi
   [ -n "$ans" ] || ans="$cur"
   case "$ans" in
@@ -434,17 +500,11 @@ compose_down() {
 #   curl 管道安装 -> stdin 是脚本流, 但 stdout 是终端, 改从 /dev/tty 问;
 #   CI/定时任务等无终端环境 -> 不问, 直接默认 (避免 read 卡死).
 # 隧道开关: $1 默认值 (1 开 / 0 关), 为空默认开.
-# 显式 TUNNEL 环境变量由调用方优先处理, 这里只管"问";
+# 显式 TUNNEL/--tunnel 由调用方优先处理, 这里只管"问";
 # 可交互则询问 (空=取默认), 拿不到终端直接取默认.
 ask_tunnel() {
   local def="${1:-1}" ans=""
-  if [ -t 0 ]; then
-    T ask_tunnel
-    read -r ans 2>/dev/null || ans=""
-  elif [ -t 1 ] && [ -e /dev/tty ]; then
-    T ask_tunnel >/dev/tty || true
-    read -r ans </dev/tty 2>/dev/null || ans=""
-  fi
+  ans="$(ask_line ask_tunnel || true)"
   [ -n "$ans" ] || ans="$def"
   case "$ans" in
     [Nn] | [Nn][Oo] | 0 | [Ff]*) printf "0" ;;
@@ -488,8 +548,20 @@ upsert_env() {  local k="$1" v="$2" f="$3" esc
   fi
 }
 
+# 停掉一切 go-vless 足迹: systemd 服务、compose 栈、前台残留进程.
+# 重装/卸载前调用, 避免端口占用与新旧版本混跑.
+stop_all() {
+  T stopping
+  echo
+  systemctl stop go-vless 2>/dev/null || true
+  compose_down >/dev/null 2>&1 || true
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -x go-vless 2>/dev/null || true
+  fi
+}
+
 # 重装确认: 二进制/service/compose 任一存在即视为已安装.
-# 可交互 (stdin TTY，管道安装时走 /dev/tty) 则询问，默认 Y；
+# 经 ask_line 询问 (stdin TTY，管道安装时走 stderr 终端或 /dev/tty)，默认 Y；
 # 拿不到终端时明示后自动继续 (脚本化重装不卡死).
 confirm_reinstall() {
   local found=""
@@ -498,21 +570,15 @@ confirm_reinstall() {
   [ -f "$COMPOSE_DIR/docker-compose.yml" ] && found="${found:+$found, }docker"
   [ -n "$found" ] || return 0
   local ans=""
-  if [ -t 0 ]; then
-    T confirm_reinstall "$found"
-    read -r ans 2>/dev/null || ans=""
-  elif [ -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-    T confirm_reinstall "$found" >/dev/tty || true
-    read -r ans </dev/tty 2>/dev/null || ans=""
+  if ans="$(ask_line confirm_reinstall "$found")"; then
+    if reinstall_denied "$ans"; then
+      T reinstall_abort >&2
+      echo >&2
+      exit 0
+    fi
   else
     T auto_proceed "$found"
     echo
-    return 0
-  fi
-  if reinstall_denied "$ans"; then
-    T reinstall_abort >&2
-    echo >&2
-    exit 0
   fi
 }
 
@@ -645,6 +711,8 @@ show_info() {
 do_install() {
   need_root
   confirm_reinstall
+  # 先停干净 (同模式服务、前台残留进程), 再覆盖安装, 避免端口占用.
+  stop_all
   # 重装即全新配置: 删旧 env, 后面 write_env 重新生成 UUID/密钥.
   rm -f "$ENV_FILE"
   local ver="$VERSION"
@@ -726,7 +794,8 @@ do_update() {
 
 do_uninstall() {
   need_root
-  systemctl disable --now go-vless 2>/dev/null || true
+  stop_all
+  systemctl disable go-vless 2>/dev/null || true
   compose_down
   rm -rf "$COMPOSE_DIR"
   rm -f "$UNIT" "$BIN" "$ENV_FILE"
