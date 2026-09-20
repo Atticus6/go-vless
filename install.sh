@@ -15,7 +15,8 @@
 # 环境变量可覆盖默认值: UUID PORT TUNNEL TUNNEL_PROTO MAX_CONN CONFIG_KEY DOMAIN SSL_DOMAIN RUNTIME REGISTER
 # 其中 REGISTER 与 --register 等价 (flag 优先), 内容为 服务端地址:节点id:config_key;
 # 不填则只启动代理服务, 不向 dashboard 注册上报.
-# 其中 TUNNEL 不设时安装会交互询问 (默认开启); RUNTIME=binary|docker 指定运行模式,
+# 其中 TUNNEL 不设时安装会交互询问 (默认开启, 重装默认保持现有值);
+# RUNTIME=binary|docker 指定运行模式 (重装同样默认保持现有模式),
 # 不设且本机有 Docker 时交互询问 (默认二进制), 无 Docker 直接二进制.
 # Docker 模式镜像: ghcr.io/atticus6/go-vless:<版本去v>, 随 release 版本走 (update 可升级).
 set -euo pipefail
@@ -58,12 +59,14 @@ T() {
     need_root) zh="请用 root 运行 (sudo bash)"; en="please run as root (sudo bash)" ;;
     missing_dep) zh="缺少依赖: %s"; en="missing dependency: %s" ;;
     latest_fail) zh="获取最新版本失败"; en="failed to resolve latest release" ;;
+    latest_hint) zh="可手动指定版本重试，如：sudo ./install.sh update v0.1.1"; en="retry with an explicit version, e.g.: sudo ./install.sh update v0.1.1" ;;
     bad_arch) zh="不支持的架构: %s"; en="unsupported architecture: %s" ;;
     downloading) zh="下载 %s ..."; en="downloading %s ..." ;;
     sha_fail) zh="sha256 校验失败"; en="sha256 verification failed" ;;
     bin_installed) zh="二进制已安装: %s"; en="binary installed: %s" ;;
     runtime_invalid) zh="RUNTIME 非法: %s (binary|docker)"; en="invalid RUNTIME: %s (binary|docker)" ;;
     ask_runtime) zh="检测到 Docker, 选择运行方式 [1=二进制(默认)/2=Docker]: "; en="Docker detected, choose runtime [1=binary(default)/2=Docker]: " ;;
+    ask_runtime_cur) zh="检测到 Docker, 选择运行方式 [1=二进制/2=Docker] (当前: %s, 回车保持): "; en="Docker detected, choose runtime [1=binary/2=Docker] (current: %s, Enter to keep): " ;;
     compose_written) zh="compose 已生成: %s (%s)"; en="compose written: %s (%s)" ;;
     compose_missing) zh="docker compose 不可用"; en="docker compose not available" ;;
     compose_skip) zh="docker compose 不可用, 跳过容器清理 (%s 保留)"; en="docker compose not available, skip container cleanup (keeping %s)" ;;
@@ -83,6 +86,7 @@ T() {
     info_dash) zh="Dashboard:  %s"; en="Dashboard:    %s" ;;
     info_node) zh="节点 ID:    %s"; en="Node ID:      %s" ;;
     info_tunnel) zh="隧道:       %s"; en="Tunnel:      %s" ;;
+    docker_boot) zh="Docker 开机自启已设置"; en="Docker autostart enabled" ;;
     tun_on) zh="开"; en="on" ;;
     tun_off) zh="关"; en="off" ;;
     installer_saved) zh="安装脚本已保存至 %s，后续 update/uninstall 可直接用它"; en="installer saved to %s, use it for future update/uninstall" ;;
@@ -199,17 +203,27 @@ need_root() {
   done
 }
 
-# 最新 release tag
+# 最新 release tag: 先调 GitHub API, 被限流/403 时改走 releases/latest
+# 页面跳转解析 (该接口不计 API 配额); 都失败则报错并提示手动指定版本.
 latest_tag() {
-  local tag
-  tag="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
+  local tag eff
+  tag="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null |
     grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
   if [ -z "$tag" ]; then
-    T latest_fail >&2
-    echo >&2
-    exit 1
+    eff="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null)" || eff=""
+    tag="$(printf "%s" "$eff" | sed -nE 's|.*/tag/(v[^/]+).*|\1|p')"
   fi
-  echo "$tag"
+  case "$tag" in
+    v*)
+      echo "$tag"
+      return 0
+      ;;
+  esac
+  T latest_fail >&2
+  echo >&2
+  T latest_hint >&2
+  echo >&2
+  exit 1
 }
 
 goarch() {
@@ -283,9 +297,25 @@ docker_available() {
   [ -n "$(compose_bin)" ] || return 1
 }
 
-# 运行模式: RUNTIME 环境变量优先, 否则有 Docker 时交互询问 (默认二进制).
-# 非终端环境不问直接二进制 (避免 read 卡死).
+# 当前运行模式 (重装时作默认值): compose 文件在即 docker,
+# 否则有二进制/service 痕迹即 binary, 全无即全新安装 ("").
+current_mode() {
+  [ -f "$COMPOSE_DIR/docker-compose.yml" ] && {
+    printf "docker"
+    return
+  }
+  { [ -f "$UNIT" ] || [ -x "$BIN" ]; } && {
+    printf "binary"
+    return
+  }
+  printf ""
+}
+
+# 运行模式: RUNTIME 环境变量优先, 否则交互询问.
+# stdin TTY 优先, 管道安装且 stdout 是终端时走 /dev/tty;
+# 拿不到终端时取当前模式 (全新安装则二进制), 避免重装静默翻转模式.
 ask_runtime() {
+  local cur="${1:-}"
   local r
   r="$(printf "%s" "${RUNTIME:-}" | tr '[:upper:]' '[:lower:]')"
   case "$r" in
@@ -293,29 +323,37 @@ ask_runtime() {
       printf "docker"
       return
       ;;
-    binary | systemd | "") : ;;
+    binary | systemd)
+      printf "binary"
+      return
+      ;;
+    "")
+      : ;;
     *)
       T runtime_invalid "$RUNTIME" >&2
       echo >&2
       exit 1
       ;;
   esac
-  if docker_available && { [ -t 0 ] || [ -t 1 ]; }; then
-    local ans=""
-    if [ -t 0 ]; then
-      T ask_runtime
-      read -r ans 2>/dev/null || ans=""
-    elif [ -e /dev/tty ]; then
-      T ask_runtime >/dev/tty || true
-      read -r ans </dev/tty 2>/dev/null || ans=""
-    fi
-    case "$ans" in
-      2 | [Dd]ocker | [Cc]ompose)
-        printf "docker"
-        return
-        ;;
-    esac
+  if ! docker_available; then
+    if [ "$cur" = "docker" ]; then printf "docker"; else printf "binary"; fi
+    return
   fi
+  local ans=""
+  if [ -t 0 ]; then
+    if [ -n "$cur" ]; then T ask_runtime_cur "$cur"; else T ask_runtime; fi
+    read -r ans 2>/dev/null || ans=""
+  elif [ -t 1 ] && [ -e /dev/tty ]; then
+    if [ -n "$cur" ]; then T ask_runtime_cur "$cur" >/dev/tty || true; else T ask_runtime >/dev/tty || true; fi
+    read -r ans </dev/tty 2>/dev/null || ans=""
+  fi
+  [ -n "$ans" ] || ans="$cur"
+  case "$ans" in
+    2 | [Dd]ocker | [Cc]ompose)
+      printf "docker"
+      return
+      ;;
+  esac
   printf "binary"
 }
 
@@ -366,8 +404,18 @@ compose_up() {
     echo >&2
     exit 1
   }
+  ensure_docker_boot
   # shellcheck disable=SC2086
   (cd "$COMPOSE_DIR" && $compose up -d)
+}
+
+# Docker 宿主机开机自启 (daemon 不随开机启动的话, 重启后容器不会回来).
+# need_root 已保证 systemctl 存在；失败不中断安装.
+ensure_docker_boot() {
+  if systemctl enable docker containerd >/dev/null 2>&1; then
+    T docker_boot
+    echo
+  fi
 }
 
 compose_down() {
@@ -386,12 +434,11 @@ compose_down() {
 #   直接执行 -> stdin 是终端, 直接问;
 #   curl 管道安装 -> stdin 是脚本流, 但 stdout 是终端, 改从 /dev/tty 问;
 #   CI/定时任务等无终端环境 -> 不问, 直接默认 (避免 read 卡死).
+# 隧道开关: $1 默认值 (1 开 / 0 关), 为空默认开.
+# 显式 TUNNEL 环境变量由调用方优先处理, 这里只管"问";
+# 可交互则询问 (空=取默认), 拿不到终端直接取默认.
 ask_tunnel() {
-  if [ -n "${TUNNEL:-}" ]; then
-    printf "%s" "$TUNNEL"
-    return
-  fi
-  local ans=""
+  local def="${1:-1}" ans=""
   if [ -t 0 ]; then
     T ask_tunnel
     read -r ans 2>/dev/null || ans=""
@@ -399,21 +446,34 @@ ask_tunnel() {
     T ask_tunnel >/dev/tty || true
     read -r ans </dev/tty 2>/dev/null || ans=""
   fi
+  [ -n "$ans" ] || ans="$def"
   case "$ans" in
     [Nn] | [Nn][Oo] | 0 | [Ff]*) printf "0" ;;
     *) printf "1" ;;
   esac
 }
 
-# 写配置 (已存在则保留, 避免重装刷掉 UUID/密钥)
+# 写配置 (已存在则保留 UUID/密钥等, 但运行模式与隧道开关可重选).
 write_env() {
   if [ -f "$ENV_FILE" ]; then
     T env_kept "$ENV_FILE"
     echo
+    local explicit_tunnel="${TUNNEL:-}"
+    # shellcheck disable=SC1090
+    . "$ENV_FILE" 2>/dev/null || true
+    if [ -n "$explicit_tunnel" ]; then
+      upsert_env TUNNEL "$explicit_tunnel" "$ENV_FILE"
+    else
+      upsert_env TUNNEL "$(ask_tunnel "${TUNNEL:-1}")" "$ENV_FILE"
+    fi
     return
   fi
   local tunnel
-  tunnel="$(ask_tunnel)"
+  if [ -n "${TUNNEL:-}" ]; then
+    tunnel="$TUNNEL"
+  else
+    tunnel="$(ask_tunnel 1)"
+  fi
   cat >"$ENV_FILE" <<EOF
 # go-vless 配置 (install.sh 生成, 手改后 systemctl restart go-vless 生效)
 UUID=${UUID:-$(cat /proc/sys/kernel/random/uuid)}
@@ -604,7 +664,7 @@ do_install() {
     ver="$(latest_tag)"
   fi
   local mode
-  mode="$(ask_runtime)"
+  mode="$(ask_runtime "$(current_mode)")"
   T running_mode "$mode"
   echo
   write_env
@@ -658,6 +718,7 @@ do_update() {
       echo >&2
       exit 1
     }
+    ensure_docker_boot
     # shellcheck disable=SC2086
     (cd "$COMPOSE_DIR" && $compose pull && $compose up -d)
     sleep 3
