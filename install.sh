@@ -5,7 +5,7 @@
 # 提示信息语言 / Message language: LC_ALL/LANG 以 zh 开头即中文, 否则英文;
 # starts with zh = Chinese, otherwise English. GO_VLESS_LANG=zh|en 可强制指定.
 #
-# 安装 (自动解析最新版, 已有配置则保留):
+# 安装 (自动解析最新版, 重装删除旧配置全新生成, 升级请用 update 保留配置):
 #   curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash
 # 管道安装 + 注册到 dashboard (按节点复制安装命令, 三元组 服务端地址:节点id:config_key):
 #   curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash -s -- --register "<服务端地址>:<节点id>:<config_key>"
@@ -71,7 +71,6 @@ T() {
     compose_missing) zh="docker compose 不可用"; en="docker compose not available" ;;
     compose_skip) zh="docker compose 不可用, 跳过容器清理 (%s 保留)"; en="docker compose not available, skip container cleanup (keeping %s)" ;;
     ask_tunnel) zh="是否启动 Argo 隧道? [Y/n]: "; en="Enable Argo tunnel? [Y/n]: " ;;
-    env_kept) zh="配置已存在, 保留: %s"; en="config exists, keeping: %s" ;;
     env_written) zh="配置已生成: %s"; en="config written: %s" ;;
     reg_updated) zh="注册信息已更新 (dashboard: %s)"; en="register info updated (dashboard: %s)" ;;
     env_missing) zh="配置不存在 (%s), 先执行安装"; en="config not found (%s), install first" ;;
@@ -453,21 +452,8 @@ ask_tunnel() {
   esac
 }
 
-# 写配置 (已存在则保留 UUID/密钥等, 但运行模式与隧道开关可重选).
+# 写配置 (重装已删旧文件, 这里永远全新生成).
 write_env() {
-  if [ -f "$ENV_FILE" ]; then
-    T env_kept "$ENV_FILE"
-    echo
-    local explicit_tunnel="${TUNNEL:-}"
-    # shellcheck disable=SC1090
-    . "$ENV_FILE" 2>/dev/null || true
-    if [ -n "$explicit_tunnel" ]; then
-      upsert_env TUNNEL "$explicit_tunnel" "$ENV_FILE"
-    else
-      upsert_env TUNNEL "$(ask_tunnel "${TUNNEL:-1}")" "$ENV_FILE"
-    fi
-    return
-  fi
   local tunnel
   if [ -n "${TUNNEL:-}" ]; then
     tunnel="$TUNNEL"
@@ -659,6 +645,8 @@ show_info() {
 do_install() {
   need_root
   confirm_reinstall
+  # 重装即全新配置: 删旧 env, 后面 write_env 重新生成 UUID/密钥.
+  rm -f "$ENV_FILE"
   local ver="$VERSION"
   if [ "$ver" = "latest" ]; then
     ver="$(latest_tag)"
