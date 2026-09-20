@@ -11,6 +11,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/Atticus6/go-vless/main/install.sh | sudo bash -s -- --register "<服务端地址>:<节点id>:<config_key>"
 # 本地:
 #   sudo ./install.sh [--register <三元组>] [install|update|uninstall] [version]
+# 装完脚本会存一份到 /usr/local/bin/go-vless-install.sh，后续直接 sudo go-vless-install.sh [update|uninstall]
 # 环境变量可覆盖默认值: UUID PORT TUNNEL TUNNEL_PROTO MAX_CONN CONFIG_KEY DOMAIN SSL_DOMAIN RUNTIME REGISTER
 # 其中 REGISTER 与 --register 等价 (flag 优先), 内容为 服务端地址:节点id:config_key;
 # 不填则只启动代理服务, 不向 dashboard 注册上报.
@@ -26,6 +27,9 @@ BIN="/usr/local/bin/go-vless"
 ENV_FILE="/etc/go-vless.env"
 UNIT="/etc/systemd/system/go-vless.service"
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/go-vless}"
+# 安装脚本自身存档: 装完/升级后可直接 sudo go-vless-install.sh [update|uninstall]
+INSTALLER_DEST="/usr/local/bin/go-vless-install.sh"
+INSTALLER_URL="https://raw.githubusercontent.com/$REPO/main/install.sh"
 
 # ---- i18n ----
 # 本脚本所有面向用户的输出跟随系统语言: LC_ALL/LANG 以 zh 开头即中文,
@@ -78,6 +82,14 @@ T() {
     info_key) zh="CONFIG_KEY: %s"; en="CONFIG_KEY:   %s" ;;
     info_dash) zh="Dashboard:  %s"; en="Dashboard:    %s" ;;
     info_node) zh="节点 ID:    %s"; en="Node ID:      %s" ;;
+    info_tunnel) zh="隧道:       %s"; en="Tunnel:      %s" ;;
+    tun_on) zh="开"; en="on" ;;
+    tun_off) zh="关"; en="off" ;;
+    installer_saved) zh="安装脚本已保存至 %s，后续 update/uninstall 可直接用它"; en="installer saved to %s, use it for future update/uninstall" ;;
+    installer_save_fail) zh="安装脚本存档失败 (%s)，不影响本次安装"; en="failed to archive installer (%s), continuing anyway" ;;
+    confirm_reinstall) zh="检测到已安装 (%s)，覆盖重装？[Y/n] "; en="already installed (%s), overwrite? [Y/n] " ;;
+    reinstall_abort) zh="已取消（用 update 升级，或 uninstall 后重装）"; en="aborted (use update to upgrade, or uninstall first)" ;;
+    auto_proceed) zh="非交互环境，%s 已存在，自动继续"; en="non-interactive, %s exists, continuing automatically" ;;
     info_ssl) zh="HTTPS 证书: %s"; en="HTTPS cert:  %s" ;;
     ssl_off) zh="未启用 (仅 HTTP)"; en="disabled (HTTP only)" ;;
     info_admin) zh="管理页:     http://<服务器IP>:%s/config?key=%s"; en="Admin page:  http://<server-IP>:%s/config?key=%s" ;;
@@ -430,6 +442,64 @@ upsert_env() {  local k="$1" v="$2" f="$3" esc
   fi
 }
 
+# 重装确认: 二进制/service/compose 任一存在即视为已安装.
+# 可交互 (stdin TTY，管道安装时走 /dev/tty) 则询问，默认 Y；
+# 拿不到终端时明示后自动继续 (脚本化重装不卡死).
+confirm_reinstall() {
+  local found=""
+  [ -x "$BIN" ] && found="binary"
+  [ -f "$UNIT" ] && found="${found:+$found, }systemd"
+  [ -f "$COMPOSE_DIR/docker-compose.yml" ] && found="${found:+$found, }docker"
+  [ -n "$found" ] || return 0
+  local ans=""
+  if [ -t 0 ]; then
+    T confirm_reinstall "$found"
+    read -r ans 2>/dev/null || ans=""
+  elif [ -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    T confirm_reinstall "$found" >/dev/tty || true
+    read -r ans </dev/tty 2>/dev/null || ans=""
+  else
+    T auto_proceed "$found"
+    echo
+    return 0
+  fi
+  if reinstall_denied "$ans"; then
+    T reinstall_abort >&2
+    echo >&2
+    exit 0
+  fi
+}
+
+# 重装问答判定 (供测试与 confirm_reinstall 共用): 空=默认 Y, 显式 no 拒绝.
+reinstall_denied() {
+  case "$1" in
+    [Nn] | [Nn][Oo] | 0 | [Ff]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 安装脚本自身存档 (管道安装时 stdin 无文件, 则从 GitHub 重拉一份).
+# 失败只警告不中断 (need_root 已保证目录可写, 一般不会走到).
+save_installer() {
+  local src="${BASH_SOURCE[0]:-}"
+  if [ -n "$src" ] && [ -f "$src" ]; then
+    install -m 0755 "$src" "$INSTALLER_DEST" 2>/dev/null || {
+      T installer_save_fail "$INSTALLER_DEST" >&2
+      echo >&2
+      return 0
+    }
+  else
+    curl -fsSL -o "$INSTALLER_DEST" "$INSTALLER_URL" 2>/dev/null || {
+      T installer_save_fail "$INSTALLER_URL" >&2
+      echo >&2
+      return 0
+    }
+    chmod 0755 "$INSTALLER_DEST" 2>/dev/null || true
+  fi
+  T installer_saved "$INSTALLER_DEST"
+  echo
+}
+
 # 老配置迁移: 只补缺失的键 (已有值永不覆盖).
 # 新版本加 env 时在这里加一行, 否则 update/重装的老用户永远用不上.
 migrate_env() {
@@ -505,6 +575,12 @@ show_info() {
     T info_ssl "$(T ssl_off)"
   fi
   echo
+  if [ "${TUNNEL:-1}" = "1" ]; then
+    T info_tunnel "$(T tun_on)"
+  else
+    T info_tunnel "$(T tun_off)"
+  fi
+  echo
   T info_admin "${PORT:-8080}" "${CONFIG_KEY:-}"
   echo
   if [ "$mode" = "docker" ]; then
@@ -522,6 +598,7 @@ show_info() {
 
 do_install() {
   need_root
+  confirm_reinstall
   local ver="$VERSION"
   if [ "$ver" = "latest" ]; then
     ver="$(latest_tag)"
@@ -533,6 +610,7 @@ do_install() {
   write_env
   migrate_env
   apply_register
+  save_installer
   if [ "$mode" = "docker" ]; then
     # 切到 docker: 停掉二进制服务 (如有)
     systemctl disable --now go-vless 2>/dev/null || true
@@ -560,6 +638,7 @@ do_update() {
   need_root
   migrate_env
   apply_register
+  save_installer
   local ver="$VERSION"
   if [ "$ver" = "latest" ]; then
     ver="$(latest_tag)"
