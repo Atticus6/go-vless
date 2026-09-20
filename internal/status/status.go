@@ -47,7 +47,7 @@ type Provider struct {
 // 环境变量地址优先（DOMAIN、VERCEL_URL、NF_HOSTS、RAILWAY_PUBLIC_DOMAIN，
 // 均支持逗号分隔多值），其后追加 TLS 生效的 SSL 域名（https，无端口），重复去重.
 func (p *Provider) PublicURLs() []string {
-	urls := envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS", "RAILWAY_PUBLIC_DOMAIN")
+	urls := envHosts("DOMAIN", "VERCEL_URL", "NF_HOSTS", "RAILWAY_PUBLIC_DOMAIN","KOYEB_PUBLIC_DOMAIN")
 	if p != nil && p.SSLDomain != "" {
 		u := "https://" + p.SSLDomain
 		dup := false
