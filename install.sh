@@ -19,7 +19,7 @@
 # RUNTIME=binary|docker 指定运行模式 (重装同样默认保持现有模式),
 # 不设且本机有 Docker 时交互询问 (默认二进制), 无 Docker 直接二进制.
 # 管道 + sudo 下环境变量会被剥离, 非交互指定用 flag (与 --register 同理):
-#   curl -fsSL .../install.sh | sudo bash -s -- --tunnel 0 --runtime docker
+#   curl -fsSL .../install.sh | sudo bash -s -- --tunnel 0 --runtime docker --ssl-domain example.com
 # Docker 模式镜像: ghcr.io/atticus6/go-vless:<版本去v>, 随 release 版本走 (update 可升级).
 set -euo pipefail
 
@@ -81,7 +81,7 @@ T() {
     env_lost) zh="配置丢失 (%s), 先执行安装"; en="config lost (%s), install first" ;;
     not_installed) zh="尚未安装, 先执行安装"; en="not installed yet, install first" ;;
     uninstalled) zh="已卸载 (二进制/unit/容器/配置已删除，配置曾在 %s)"; en="uninstalled (binary/unit/container/config removed, config was %s)" ;;
-    usage) zh="用法: %s [--register <服务端地址:节点id:config_key>] [--tunnel 0|1] [--runtime binary|docker] [install|update|uninstall] [version]"; en="usage: %s [--register <server-url:node-id:config_key>] [--tunnel 0|1] [--runtime binary|docker] [install|update|uninstall] [version]" ;;
+    usage) zh="用法: %s [--register <服务端地址:节点id:config_key>] [--tunnel 0|1] [--runtime binary|docker] [--ssl-domain <域名>] [install|update|uninstall] [version]"; en="usage: %s [--register <server-url:node-id:config_key>] [--tunnel 0|1] [--runtime binary|docker] [--ssl-domain <domain>] [install|update|uninstall] [version]" ;;
     mode) zh="运行模式:   %s"; en="Runtime:     %s" ;;
     dash_none) zh="未配置 (仅本地运行，不向 dashboard 注册)"; en="not set (local only, no dashboard registration)" ;;
     info_uuid) zh="UUID:       %s"; en="UUID:         %s" ;;
@@ -100,6 +100,11 @@ T() {
     auto_proceed) zh="非交互环境，%s 已存在，自动继续"; en="non-interactive, %s exists, continuing automatically" ;;
     info_ssl) zh="HTTPS 证书: %s"; en="HTTPS cert:  %s" ;;
     ssl_off) zh="未启用 (仅 HTTP)"; en="disabled (HTTP only)" ;;
+    ask_register) zh="是否注册到 dashboard？[y/N]: "; en="Register to dashboard? [y/N]: " ;;
+    ask_register_triple) zh="粘贴三元组 (服务端地址:节点id:config_key): "; en="Paste triple (server-url:node-id:config_key): " ;;
+    ask_ssl) zh="是否申请 TLS 证书 (需域名解析到本机且 80/443 可用)？[y/N]: "; en="Issue a TLS certificate (domain must resolve here, ports 80/443 open)? [y/N]: " ;;
+    ask_ssl_domain) zh="输入域名 (如 example.com): "; en="Enter domain (e.g. example.com): " ;;
+    domain_invalid) zh="域名非法: %s, 形如 example.com"; en="invalid domain: %s, e.g. example.com" ;;
     info_admin) zh="管理页:     http://<服务器IP>:%s/config?key=%s"; en="Admin page:  http://<server-IP>:%s/config?key=%s" ;;
     info_ctl) zh="启停:       %s"; en="Control:     %s" ;;
     info_logs) zh="日志:       %s"; en="Logs:        %s" ;;
@@ -115,7 +120,46 @@ T() {
   fi
 }
 
-# 命令行参数预处理: 摘出 --register/--tunnel/--runtime (管道安装 sudo bash -s --
+# --tunnel 取值归一化为 0/1 (大小写/别名兼容), 非法直接报错退出.
+# 注意: 必须定义在下方参数预处理之前, 预处理在加载时就会调用它.
+normalize_tunnel() {
+  case "$(printf "%s" "$1" | tr '[:upper:]' '[:lower:]')" in
+    1 | y | yes | true | on) printf "1" ;;
+    0 | n | no | false | off) printf "0" ;;
+    *)
+      T tunnel_invalid "$1" >&2
+      echo >&2
+      exit 1
+      ;;
+  esac
+}
+
+# --ssl-domain 归一化 (去空白/小写/去尾点) 并轻校验, 非法直接报错退出.
+normalize_ssldomain() {
+  local d
+  d="$(printf "%s" "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  d="${d%.}"
+  if ! valid_domain "$d"; then
+    T domain_invalid "$1" >&2
+    echo >&2
+    exit 1
+  fi
+  printf "%s" "$d"
+}
+
+# 域名轻校验 (安装时拦截明显写错的; 服务端启动时还会严格校验).
+# 输入须已做去空白/小写归一, 这里只拦: 空、带 scheme、路径、端口、空白、缺一级域名.
+valid_domain() {
+  case "$1" in
+    "" | *://* | */* | *:* | *[[:space:]]*) return 1 ;;
+  esac
+  case "$1" in
+    *.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 命令行参数预处理: 摘出 --register/--tunnel/--runtime/--ssl-domain (管道安装 sudo bash -s --
 # 透参就靠它, 纯 env 变量过不了 sudo), 剩下的 positional 原样放回 $1/$2.
 REGISTER="${REGISTER:-}"
 _ARGS=()
@@ -160,6 +204,19 @@ while [ $# -gt 0 ]; do
       RUNTIME="${1#--runtime=}"
       shift
       ;;
+    --ssl-domain)
+      [ $# -ge 2 ] || {
+        T opt_missing_arg "--ssl-domain" >&2
+        echo >&2
+        exit 1
+      }
+      SSL_DOMAIN="$(normalize_ssldomain "$2")" || exit 1
+      shift 2
+      ;;
+    --ssl-domain=*)
+      SSL_DOMAIN="$(normalize_ssldomain "${1#--ssl-domain=}")" || exit 1
+      shift
+      ;;
     --)
       shift
       while [ $# -gt 0 ]; do
@@ -182,19 +239,6 @@ fi
 unset _ARGS
 ACTION="${1:-install}"
 VERSION="${2:-${VERSION:-latest}}"
-
-# --tunnel 取值归一化为 0/1 (大小写/别名兼容), 非法直接报错退出.
-normalize_tunnel() {
-  case "$(printf "%s" "$1" | tr '[:upper:]' '[:lower:]')" in
-    1 | y | yes | true | on) printf "1" ;;
-    0 | n | no | false | off) printf "0" ;;
-    *)
-      T tunnel_invalid "$1" >&2
-      echo >&2
-      exit 1
-      ;;
-  esac
-}
 
 # REGISTER 三元组 服务端地址:节点id:config_key (服务端地址自带冒号, 从右拆;
 # 节点 id 为 UUID、key 为 hex, 均不含冒号). 拆出的 key 直接作为 CONFIG_KEY.
@@ -512,6 +556,64 @@ ask_tunnel() {
   esac
 }
 
+# 注册信息交互收集: 命令行/环境已给三元组则跳过;
+# 否则询问 (默认不注册), 粘贴后解析出三要素落库, 非法可重贴 (空=跳过).
+# 非终端环境直接跳过 (apply_register 只认已给的值).
+collect_register() {
+  if [ -n "${REGISTER:-}" ]; then
+    return 0
+  fi
+  local ans=""
+  ans="$(ask_line ask_register || true)"
+  case "$ans" in
+    [Yy]* | 1) : ;;
+    *) return 0 ;;
+  esac
+  local triple reg
+  while true; do
+    triple="$(ask_line ask_register_triple || true)"
+    [ -z "$triple" ] && return 0
+    if reg="$(parse_register "$triple")"; then
+      REGISTER_URL="$(printf "%s" "$reg" | sed -n '1p')"
+      REGISTER_NODE_ID="$(printf "%s" "$reg" | sed -n '2p')"
+      CONFIG_KEY="$(printf "%s" "$reg" | sed -n '3p')"
+      export REGISTER_URL REGISTER_NODE_ID CONFIG_KEY
+      REGISTER="$triple"
+      return 0
+    fi
+    T reg_bad_format >&2
+    echo >&2
+  done
+}
+
+# SSL 域名交互收集: 已给出 (flag/env) 则跳过;
+# 否则询问 (默认不申请), 输入后轻校验落库, 非法可重输 (空=跳过).
+# 非终端环境直接跳过.
+collect_ssl_domain() {
+  if [ -n "${SSL_DOMAIN:-}" ]; then
+    return 0
+  fi
+  local ans=""
+  ans="$(ask_line ask_ssl || true)"
+  case "$ans" in
+    [Yy]* | 1) : ;;
+    *) return 0 ;;
+  esac
+  local domain=""
+  while true; do
+    domain="$(ask_line ask_ssl_domain || true)"
+    [ -z "$domain" ] && return 0
+    domain="$(printf "%s" "$domain" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    domain="${domain%.}"
+    if valid_domain "$domain"; then
+      SSL_DOMAIN="$domain"
+      return 0
+    fi
+    T domain_invalid "$domain" >&2
+    echo >&2
+  done
+}
+
 # 写配置 (重装已删旧文件, 这里永远全新生成).
 write_env() {
   local tunnel
@@ -520,6 +622,8 @@ write_env() {
   else
     tunnel="$(ask_tunnel 1)"
   fi
+  collect_register
+  collect_ssl_domain
   cat >"$ENV_FILE" <<EOF
 # go-vless 配置 (install.sh 生成, 手改后 systemctl restart go-vless 生效)
 UUID=${UUID:-$(cat /proc/sys/kernel/random/uuid)}
