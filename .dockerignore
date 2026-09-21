@@ -3,3 +3,5 @@ server.exe
 *.log
 *.test
 .vercelignore
+.git
+dist
