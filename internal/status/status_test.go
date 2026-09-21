@@ -76,6 +76,9 @@ func TestConfigHandlerAuth(t *testing.T) {
 	if !ok || entry["up"] != "1.00 KB" || entry["down"] != "0 B" {
 		t.Errorf("traffic entry = %v, want up=1.00 KB down=0 B", entry)
 	}
+	if !ok || entry["upBytes"] != float64(1024) || entry["downBytes"] != float64(0) {
+		t.Errorf("traffic bytes = %v, want upBytes=1024 downBytes=0", entry)
+	}
 	// 隧道未开启时 tunnelURL 为空 (url 走 DOMAIN/VERCEL_URL 回退)
 	if body["tunnel"] != false || body["tunnelURL"] != "" {
 		t.Errorf("tunnel fields = %v/%v, want false/empty", body["tunnel"], body["tunnelURL"])

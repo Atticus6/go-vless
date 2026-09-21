@@ -418,11 +418,27 @@ func (p *Provider) userTraffic() map[string]user.UserTraffic {
 	return p.Users.SnapshotAll()
 }
 
-// formatTraffic 流量字节数格式化为人类可读 (up/down 均为 "x.xx MB" 风格).
-func formatTraffic(all map[string]user.UserTraffic) map[string]map[string]string {
-	out := make(map[string]map[string]string, len(all))
+// UserTrafficView 单用户流量展示: 人类可读 (up/down, "x.xx MB" 风格)
+// + 原始字节 (upBytes/downBytes, dashboard 落库用, 重启清零与计数器一致).
+// up/down 字符串保留：老 dashboard 只认这两个字段，加字段不破坏兼容.
+type UserTrafficView struct {
+	Up        string `json:"up"`
+	Down      string `json:"down"`
+	UpBytes   uint64 `json:"upBytes"`
+	DownBytes uint64 `json:"downBytes"`
+}
+
+// formatTraffic 流量格式化为人类可读 (up/down 均为 "x.xx MB" 风格),
+// 同时带上原始字节数供 dashboard 记录.
+func formatTraffic(all map[string]user.UserTraffic) map[string]UserTrafficView {
+	out := make(map[string]UserTrafficView, len(all))
 	for id, t := range all {
-		out[id] = map[string]string{"up": formatBytes(t.Up), "down": formatBytes(t.Down)}
+		out[id] = UserTrafficView{
+			Up:        formatBytes(t.Up),
+			Down:      formatBytes(t.Down),
+			UpBytes:   t.Up,
+			DownBytes: t.Down,
+		}
 	}
 	return out
 }

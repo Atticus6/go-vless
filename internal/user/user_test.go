@@ -63,6 +63,43 @@ func TestRegistry(t *testing.T) {
 	}
 }
 
+// TestResetAll 上报成功后清零语义：计数归零、用户保留、nil 安全.
+func TestResetAll(t *testing.T) {
+	a := uuid.MustParse("14725836-1234-5678-9abc-def012345678")
+	b := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	r := New([]uuid.UUID{a, b})
+	r.StatsFor(a).AddUp(100)
+	r.StatsFor(a).AddDown(200)
+	r.ResetAll()
+	if up, down := r.StatsFor(a).Snapshot(); up != 0 || down != 0 {
+		t.Errorf("after ResetAll = (%d,%d), want (0,0)", up, down)
+	}
+	// 用户保留：清零后仍合法，且可继续累计.
+	if !r.Valid(a) || !r.Valid(b) {
+		t.Error("ResetAll should not remove users")
+	}
+	r.StatsFor(a).AddUp(50)
+	if up, _ := r.StatsFor(a).Snapshot(); up != 50 {
+		t.Errorf("after recount up = %d, want 50", up)
+	}
+	// ResetUsers 只清指定用户：未知 id 跳过，其他用户不受影响.
+	r.StatsFor(a).AddUp(300)
+	r.StatsFor(b).AddUp(400)
+	r.ResetUsers([]string{"not-a-uuid", a.String()})
+	if up, _ := r.StatsFor(a).Snapshot(); up != 0 {
+		t.Errorf("ResetUsers(a) up = %d, want 0", up)
+	}
+	if up, _ := r.StatsFor(b).Snapshot(); up != 400 {
+		t.Errorf("ResetUsers should not touch b, up = %d, want 400", up)
+	}
+	// nil-safe
+	var nilReg *Registry
+	nilReg.ResetAll()
+	nilReg.ResetUsers([]string{a.String()})
+	var nilStats *Stats
+	nilStats.Reset()
+}
+
 // TestRegistryConcurrent 高并发混合读写 (-race 必跑):
 // 读写锁 + 原子计数 + 删除后孤儿指针计数都不应触发 race 或 panic.
 func TestRegistryConcurrent(t *testing.T) {

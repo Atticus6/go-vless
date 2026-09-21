@@ -37,6 +37,9 @@ const (
 	tunnelPollInterval = 5 * time.Second
 	tunnelWaitTimeout  = 2 * time.Minute
 	httpTimeout        = 15 * time.Second
+	// 流量上报的最小合计字节：上下行之和不足 100KB 的视为握手噪声直接过滤，
+	// 避免无实际用量的用户刷屏 dashboard；过滤后为空则跳过本次调用.
+	minTrafficBytes = 100 * 1024
 )
 
 type registerRequest struct {
@@ -52,6 +55,26 @@ type registerResponse struct {
 	UserTokens []string `json:"userTokens"`
 	// 服务端下发的下次全量同步周期（秒）；缺失/非法时用默认 30 分钟.
 	HeartbeatIntervalSec int `json:"heartbeatIntervalSec"`
+}
+
+// 流量上报 wire 格式：POST {dashboard}/api/traffic/report，
+// JSON {id,key,users:[{uuid,upBytes,downBytes}]}，成功回 {"ok":true}.
+// uuid 即 dashboard 的节点用户 token（后端只认 token，不认识 dashboard 那边的
+// 节点用户 id，映射由服务端按 token 反查完成）；字节取内存计数器原始值.
+type trafficUser struct {
+	UUID      string `json:"uuid"`
+	UpBytes   uint64 `json:"upBytes"`
+	DownBytes uint64 `json:"downBytes"`
+}
+
+type trafficRequest struct {
+	ID    string        `json:"id"`
+	Key   string        `json:"key"`
+	Users []trafficUser `json:"users"`
+}
+
+type trafficResponse struct {
+	OK bool `json:"ok"`
 }
 
 // BackendInfo 后端自报的地址信息. TunnelURL 用函数每次心跳现取
@@ -88,17 +111,26 @@ func MaybeStart(ctx context.Context, dashboardURL, nodeID string, info BackendIn
 		return
 	}
 	status.SetRegisterTarget(true, dashboardURL, nodeID)
-	endpoint := strings.TrimSuffix(dashboardURL, "/") + "/api/nodes/register"
-	go loop(ctx, endpoint, nodeID, key, info)
+	// 注册与流量上报共用鉴权三元组，路径不同：注册走 /api/nodes/register，
+	// 流量走 /api/traffic/report（dashboard 侧两个独立 handler）.
+	base := strings.TrimSuffix(dashboardURL, "/")
+	registerEndpoint := base + "/api/nodes/register"
+	trafficEndpoint := base + "/api/traffic/report"
+	go loop(ctx, registerEndpoint, trafficEndpoint, nodeID, key, info)
 }
 
-func loop(ctx context.Context, endpoint, nodeID, key string, info BackendInfo) {
+func loop(ctx context.Context, registerEndpoint, trafficEndpoint, nodeID, key string, info BackendInfo) {
 	// 隧道模式下等地址就绪再首报，保证第一次上报就带上可连地址.
 	waitTunnelReady(ctx, info)
 	// 常驻心跳：成功后按服务端下发的周期（默认 30 分钟）全量同步 UUID；
 	// 失败按 60 秒重试，直到成功或进程退出.
+	// 流量快照搭心跳便车：仅注册成功后上报一次，节奏与心跳一致，
+	// 成功与否都不影响本次心跳的等待周期（内部只打日志）.
 	for {
-		_, waitSec := report(endpoint, nodeID, key, info)
+		ok, waitSec := report(registerEndpoint, nodeID, key, info)
+		if ok {
+			ReportTraffic(trafficEndpoint, nodeID, key, info.Users)
+		}
 		t := time.NewTimer(time.Duration(waitSec) * time.Second)
 		select {
 		case <-ctx.Done():
@@ -182,6 +214,76 @@ func report(endpoint, nodeID, key string, info BackendInfo) (bool, int) {
 	status.SetRegisterSuccess(added, removed, total, waitSec)
 	log.Println(i18n.T("register.ok"))
 	return true, waitSec
+}
+
+// ReportTraffic 上报全用户流量快照，返回是否成功。
+// 独立于注册主流程：失败只打日志，不影响心跳周期（调用方忽略返回值也行）；
+// 注册表为 nil（纯鉴权模式）或空时直接跳过，返回成功（无上报必要）。
+// 快照取内存计数器实时值：与 /config 展示同源，重启清零的语义也一致.
+// 成功后只清已上报用户的计数（未达过滤门槛的继续累计），失败则全部保留.
+func ReportTraffic(endpoint, nodeID, key string, reg *user.Registry) bool {
+	// 无注册表/无用户：没东西可报，直接算成功.
+	if reg == nil {
+		return true
+	}
+	all := reg.SnapshotAll()
+	if len(all) == 0 {
+		return true
+	}
+	// SnapshotAll 的 key 已是 uuid 字符串，直接搬运，不再二次解析；
+	// 合计不足门槛的视为噪声过滤掉（计数保留在内存，下次累计够量再报）.
+	users := make([]trafficUser, 0, len(all))
+	for id, t := range all {
+		if t.Up+t.Down < minTrafficBytes {
+			continue
+		}
+		users = append(users, trafficUser{UUID: id, UpBytes: t.Up, DownBytes: t.Down})
+	}
+	// 过滤后无人：跳过本次调用（返回成功，不是失败）.
+	if len(users) == 0 {
+		return true
+	}
+	payload, err := json.Marshal(trafficRequest{ID: nodeID, Key: key, Users: users})
+	if err != nil {
+		log.Printf(i18n.T("register.traffic_fail"), err)
+		return false
+	}
+	// 超时与注册共用 15 秒：内网 dashboard 正常情况毫秒级返回.
+	reqCtx, cancel := context.WithTimeout(context.Background(), httpTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		log.Printf(i18n.T("register.traffic_fail"), err)
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf(i18n.T("register.traffic_fail"), err)
+		return false
+	}
+	defer res.Body.Close()
+	// 服务端回包很小（{"ok":true,"recorded":N}），4KB 截断足够.
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
+	if res.StatusCode != http.StatusOK {
+		log.Printf(i18n.T("register.traffic_fail"), fmt.Sprintf("http %d: %s", res.StatusCode, truncateErr(string(raw))))
+		return false
+	}
+	var out trafficResponse
+	if err := json.Unmarshal(raw, &out); err != nil || !out.OK {
+		log.Printf(i18n.T("register.traffic_fail"), "bad response: "+truncateErr(string(raw)))
+		return false
+	}
+	// 服务端确认落库后再清零：失败保留计数，下次重试一起带上（最多重复，
+	// 不丢失）；只清已上报的，被过滤的小流量继续累计，够量下次再报；
+	// 清零后下个周期从 0 重新累计，dashboard 按多行快照求和.
+	reported := make([]string, 0, len(users))
+	for _, u := range users {
+		reported = append(reported, u.UUID)
+	}
+	reg.ResetUsers(reported)
+	log.Printf(i18n.T("register.traffic_ok"), len(users))
+	return true
 }
 
 // fail 记录失败快照并打日志的公共出口：快照记短文案，日志走 i18n 模板.

@@ -43,6 +43,16 @@ func (s *Stats) Snapshot() (up, down uint64) {
 	return s.up.Load(), s.down.Load()
 }
 
+// Reset 计数清零 (nil-safe)：上报成功后调用，下个周期重新累计.
+// 原子操作，进行中的会话可继续安全计数.
+func (s *Stats) Reset() {
+	if s == nil {
+		return
+	}
+	s.up.Store(0)
+	s.down.Store(0)
+}
+
 // UserTraffic 单用户流量快照 (JSON 友好).
 type UserTraffic struct {
 	Up   uint64 `json:"up"`
@@ -59,6 +69,38 @@ func (r *Registry) SnapshotAll() map[string]UserTraffic {
 		out[id.String()] = UserTraffic{Up: up, Down: down}
 	}
 	return out
+}
+
+// ResetAll 全用户计数清零 (nil-safe)：上报成功后调用，避免下个周期重复上报.
+// 只清计数不删用户；读锁遍历即可（单个计数器原子清零，内存安全）.
+func (r *Registry) ResetAll() {
+	if r == nil {
+		return
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, st := range r.users {
+		st.Reset()
+	}
+}
+
+// ResetUsers 按 UUID 字符串清零指定用户 (nil-safe)：上报成功后只清已上报的，
+// 未达门槛被过滤的继续累计，够量下次再报；未知 id 直接跳过.
+func (r *Registry) ResetUsers(ids []string) {
+	if r == nil {
+		return
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, raw := range ids {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if st, ok := r.users[id]; ok {
+			st.Reset()
+		}
+	}
 }
 
 // Registry 用户注册表, 并发安全.

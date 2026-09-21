@@ -37,6 +37,8 @@
   "register.users_synced": "[INFO] synced node users from server: %d added, %d removed UUID(s)",
   "register.req_fail": "[WARN] dashboard register: build request failed: %v",
   "register.skipped": "[INFO] dashboard register skipped (REGISTER_URL/NODE_ID/CONFIG_KEY not all set)",
+ "register.traffic_fail": "[WARN] dashboard traffic report failed: %v",
+ "register.traffic_ok": "[INFO] reported node user traffic: %d user(s)",
   "register.unauth": "[WARN] dashboard register: unauthorized, check node id and CONFIG_KEY match dashboard",
   "server.configkey_off": "[INFO] CONFIG_KEY not set, /config disabled",
   "server.error": "Server error: %v",

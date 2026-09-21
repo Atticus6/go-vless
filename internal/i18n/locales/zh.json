@@ -37,6 +37,8 @@
   "register.users_synced": "[INFO] 已从服务端同步节点用户: 新增 %d 个, 移除 %d 个 UUID",
   "register.req_fail": "[WARN] 上报 dashboard: 构造请求失败: %v",
   "register.skipped": "[INFO] 未配置注册三元组 (REGISTER_URL/节点ID/CONFIG_KEY 缺失), 仅本地运行",
+  "register.traffic_fail": "[WARN] dashboard 流量上报失败: %v",
+  "register.traffic_ok": "[INFO] 已上报节点用户流量: %d 个用户",
   "register.unauth": "[WARN] 上报 dashboard: 未授权, 请检查节点 ID 与 CONFIG_KEY 是否与 dashboard 一致",
   "server.configkey_off": "[INFO] 未设置 CONFIG_KEY, /config 已禁用",
   "server.error": "服务异常: %v",

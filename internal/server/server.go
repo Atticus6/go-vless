@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -116,7 +117,7 @@ func Run(cfg *config.Config) {
 				servers = append(servers, srv)
 				log.Printf(i18n.T("server.listening"), cfg.Port)
 			}
-			go gracefulShutdown(tun, cancel, servers...)
+			go gracefulShutdown(tun, cancel, cfg.DashboardURL, cfg.NodeID, users, servers...)
 			log.Printf(i18n.T("server.tls_on"), domain, certCacheDir())
 			afterStart(ctx, cfg, tun, users, st)
 			if err := tlsSrv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
@@ -128,7 +129,7 @@ func Run(cfg *config.Config) {
 	}
 
 	// 优雅关闭
-	go gracefulShutdown(tun, cancel, srv)
+	go gracefulShutdown(tun, cancel, cfg.DashboardURL, cfg.NodeID, users, srv)
 
 	log.Printf(i18n.T("server.listening"), cfg.Port)
 	afterStart(ctx, cfg, tun, users, st)
@@ -194,8 +195,10 @@ func afterStart(ctx context.Context, cfg *config.Config, tun *tunnel.Tunnel, use
 	}
 }
 
-// gracefulShutdown 收信号后优雅关闭: 先停隧道, 再依次关闭所有 HTTP 服务.
-func gracefulShutdown(tun *tunnel.Tunnel, cancel context.CancelFunc, srvs ...*http.Server) {
+// gracefulShutdown 收信号后优雅关闭: 先停隧道, 再依次关闭所有 HTTP 服务,
+// 最后上报一次全用户流量快照 (内存计数随进程退出清零, 关机前落库不断档).
+// 流量上报失败只打日志, 不阻塞退出; 未配置三元组 (纯本地运行) 静默跳过.
+func gracefulShutdown(tun *tunnel.Tunnel, cancel context.CancelFunc, dashboardURL, nodeID string, users *user.Registry, srvs ...*http.Server) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
@@ -218,4 +221,13 @@ func gracefulShutdown(tun *tunnel.Tunnel, cancel context.CancelFunc, srvs ...*ht
 			log.Printf(i18n.T("server.shutdown_err"), err)
 		}
 	}
+
+	// 关机前最终上报：监听已停，不会再有新流量，计数基本定格；
+	// 出站网络此时仍可用（停的是本机监听），失败也不阻塞退出.
+	key := os.Getenv("CONFIG_KEY")
+	if dashboardURL == "" || nodeID == "" || key == "" {
+		return
+	}
+	endpoint := strings.TrimSuffix(dashboardURL, "/") + "/api/traffic/report"
+	register.ReportTraffic(endpoint, nodeID, key, users)
 }
