@@ -90,6 +90,61 @@ func TestConfigHandlerAuth(t *testing.T) {
 	}
 }
 
+// /config 自更新口：坏请求 400，门禁环境（serverless）409；
+// 通过只验证即时回包（后台下载重启不进单测）.
+func TestUpdateHandlerValidation(t *testing.T) {
+	p := &Provider{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /config/update", WithConfigKey(p.UpdateHandler))
+
+	t.Setenv("CONFIG_KEY", "s3cr3t")
+	call := func(key, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/config/update?key="+key, strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 未带 key：一律 404（WithConfigKey 中间件行为）.
+	if rec := call("", `{}`); rec.Code != http.StatusNotFound {
+		t.Errorf("no key: code = %d, want 404", rec.Code)
+	}
+	// 坏请求体：400.
+	if rec := call("s3cr3t", `{bad`); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad body: code = %d, want 400", rec.Code)
+	}
+	// serverless 环境：409 不支持（不走到下载逻辑）.
+	t.Setenv("VERCEL", "1")
+	rec := call("s3cr3t", `{}`)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("serverless: code = %d, want 409", rec.Code)
+	}
+	if rec.Body.Len() == 0 {
+		t.Error("409 should carry a reason")
+	}
+	t.Setenv("VERCEL", "")
+}
+
+// /config 携带 version 字段（自更新比对与展示用）.
+func TestConfigHasVersion(t *testing.T) {
+	p := &Provider{}
+	mux := testMux(p)
+	t.Setenv("CONFIG_KEY", "s3cr3t")
+	req := httptest.NewRequest(http.MethodGet, "/config?key=s3cr3t", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if _, ok := body["version"].(string); !ok {
+		t.Errorf("missing version string: %v", body["version"])
+	}
+}
+
 func TestEnvHosts(t *testing.T) {
 	// 多变量 + 逗号多值 + 归一化 + 去重去空
 	t.Setenv("DOMAIN", "example.com, https://a.com/, example.com, ,")

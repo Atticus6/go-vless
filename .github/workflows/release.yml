@@ -59,7 +59,7 @@ jobs:
           bin="go-vless"
           if [ "$GOOS" = "windows" ]; then bin="$bin.exe"; fi
           go build -trimpath \
-            -ldflags "-s -w -X github.com/atticus6/go-vless/internal/status.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -ldflags "-s -w -X github.com/atticus6/go-vless/internal/status.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X github.com/atticus6/go-vless/internal/status.buildVersion=${{ github.ref_name }}" \
             -o "dist/$bin" .
       - name: Package
         shell: bash

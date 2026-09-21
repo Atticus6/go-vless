@@ -45,6 +45,8 @@ func NewRouter(v *vless.Server, st *status.Provider) *http.ServeMux {
 	mux.HandleFunc("POST /config/users/add/", status.WithConfigKey(st.AddUsersHandler))
 	mux.HandleFunc("POST /config/users/remove", status.WithConfigKey(st.RemoveUsersHandler))
 	mux.HandleFunc("POST /config/users/remove/", status.WithConfigKey(st.RemoveUsersHandler))
+	mux.HandleFunc("POST /config/update", status.WithConfigKey(st.UpdateHandler))
+	mux.HandleFunc("POST /config/update/", status.WithConfigKey(st.UpdateHandler))
 	return mux
 }
 

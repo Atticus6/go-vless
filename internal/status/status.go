@@ -4,9 +4,11 @@
 package status
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"runtime"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/atticus6/go-vless/internal/i18n"
+	"github.com/atticus6/go-vless/internal/update"
 	"github.com/atticus6/go-vless/internal/user"
 	"github.com/google/uuid"
 )
@@ -25,6 +28,10 @@ import (
 // 构建期注入: -ldflags "-X github.com/atticus6/go-vless/internal/status.buildTime=2026-...";
 // 未注入时回退 debug.ReadBuildInfo 的 vcs.time, 都没有则为 "unknown".
 var buildTime = "unknown"
+
+// 构建期注入: -ldflags "-X github.com/atticus6/go-vless/internal/status.buildVersion=v1.2.3";
+// release workflow 按 tag 注入，未注入（如本地构建）为 "dev"，自更新比对与展示用.
+var buildVersion = "dev"
 
 // Provider 状态页依赖. Users 用于路径鉴权 + 取请求者流量.
 // SSLDomain 由 server 在 TLS 成功启用后赋值 (未生效保持空),
@@ -64,9 +71,10 @@ func (p *Provider) PublicURLs() []string {
 	return urls
 }
 
-// BuildVersion 构建版本（反向注册上报用），与状态页 buildTime 同源.
+// BuildVersion 构建版本（tag，如 v1.2.3；本地构建为 dev）。
+// 反向注册上报与自更新比对用，与状态页 buildTime 区分（后者是构建时间）.
 func BuildVersion() string {
-	return getBuildTime()
+	return buildVersion
 }
 
 // tunnel=true 时 url 为 Argo 隧道地址 (刚启动还在建连时会为空, 刷新重试);
@@ -100,6 +108,7 @@ func (p *Provider) Handler(w http.ResponseWriter, r *http.Request) {
 		"users":      formatTraffic(p.userTraffic()),
 		"register":   registerView(),
 		"tls":        p.tlsView(),
+		"version":    buildVersion,
 		"buildTime":  getBuildTime(),
 		"binarySize": getBinarySize(),
 		"memory":     getMemUsage(),
@@ -169,6 +178,56 @@ func (p *Provider) parseUUIDBody(w http.ResponseWriter, r *http.Request) ([]uuid
 		return nil, false
 	}
 	return ids, true
+}
+
+// UpdateHandler 触发程序自更新: POST /config/update,
+// JSON {"version":"v1.2.3"}，空字符串表示跟最新版.
+// 预检（平台门禁/请求体/可执行路径）失败直接 4xx/500；通过则立即回
+// {"ok":true,"started":true,...}，后台下载替换后原地重启
+// （dashboard 侧 10 秒超时不等结果，成败看日志与版本号变化）.
+// 鉴权由 WithConfigKey 中间件完成.
+func (p *Provider) UpdateHandler(w http.ResponseWriter, r *http.Request) {
+	lang := i18n.LangFromAcceptLanguage(r.Header.Get("Accept-Language"))
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var req struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, i18n.SprintfFor(lang, "status.bad_request", err.Error()), http.StatusBadRequest)
+		return
+	}
+	if ok, reason := update.Supported(); !ok {
+		http.Error(w, i18n.SprintfFor(lang, "update.unsupported", reason), http.StatusConflict)
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		http.Error(w, i18n.SprintfFor(lang, "update.failed", err.Error()), http.StatusInternalServerError)
+		return
+	}
+	version := strings.TrimSpace(req.Version)
+	go func() {
+		res, err := update.Apply(context.Background(), version, buildVersion, exe)
+		if err != nil {
+			log.Printf(i18n.T("update.failed"), err)
+			return
+		}
+		if !res.Updated {
+			log.Printf(i18n.T("update.current"), res.To)
+			return
+		}
+		log.Printf(i18n.T("update.done"), res.From, res.To)
+		if err := update.Restart(exe); err != nil {
+			log.Printf(i18n.T("update.failed"), err)
+		}
+	}()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"started": true,
+		"version": version,
+		"latest":  version == "",
+	})
 }
 
 // writeUsers 返回 {"ok":true,"users":[...]} 全量列表.
